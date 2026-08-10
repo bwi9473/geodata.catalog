@@ -1,0 +1,15 @@
+[general]
+name=GeoData Catalog
+qgisMinimumVersion=3.22
+qgisMaximumVersion=4.99
+description=Metadata-driven geospatial dataset catalog for Oracle, PostGIS, files and REST GeoJSON.
+version=1.0.0
+author=GeoData Team
+email=geodata@example.com
+about=Unified catalog plugin to discover, configure and load business geospatial datasets.
+category=Database
+icon=resources/icon.png
+experimental=False
+deprecated=False
+tracker=https://example.com/geodata-catalog/issues
+repository=https://example.com/geodata-catalog

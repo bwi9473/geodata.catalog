@@ -1,0 +1,45 @@
+{
+  "type": "FeatureCollection",
+  "name": "aerodromes_sample",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Brussels Airport",
+        "icao": "EBBR",
+        "iata": "BRU",
+        "type": "International"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [4.48444, 50.90139]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Antwerp International",
+        "icao": "EBAW",
+        "iata": "ANR",
+        "type": "Regional"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [4.46028, 51.18944]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Liege Airport",
+        "icao": "EBLG",
+        "iata": "LGG",
+        "type": "Cargo Hub"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [5.44278, 50.63722]
+      }
+    }
+  ]
+}

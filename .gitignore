@@ -1,0 +1,25 @@
+# Python virtual environment
+.venv-1/
+.venv_backup_20260724/
+
+# Tijdelijke bestanden
+temp/
+tmp/
+
+# Logbestanden
+logs/
+
+# Lokale data
+data/
+
+# QGIS cache / tijdelijke bestanden
+pytest_cache/
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc

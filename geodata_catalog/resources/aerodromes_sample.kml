@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>GeoData Catalog - Aerodromes Sample</name>
+    <description>Sample aerodrome points for first plugin test in QGIS.</description>
+
+    <Style id="aerodromeStyle">
+      <IconStyle>
+        <scale>1.2</scale>
+        <Icon>
+          <href>http://maps.google.com/mapfiles/kml/shapes/airports.png</href>
+        </Icon>
+      </IconStyle>
+      <LabelStyle>
+        <scale>0.9</scale>
+      </LabelStyle>
+    </Style>
+
+    <Folder>
+      <name>Network</name>
+
+      <Folder>
+        <name>Aerodromes</name>
+
+        <Placemark>
+          <name>Brussels Airport (EBBR)</name>
+          <styleUrl>#aerodromeStyle</styleUrl>
+          <ExtendedData>
+            <Data name="icao"><value>EBBR</value></Data>
+            <Data name="iata"><value>BRU</value></Data>
+            <Data name="type"><value>International</value></Data>
+          </ExtendedData>
+          <Point>
+            <coordinates>4.48444,50.90139,0</coordinates>
+          </Point>
+        </Placemark>
+
+        <Placemark>
+          <name>Antwerp International (EBAW)</name>
+          <styleUrl>#aerodromeStyle</styleUrl>
+          <ExtendedData>
+            <Data name="icao"><value>EBAW</value></Data>
+            <Data name="iata"><value>ANR</value></Data>
+            <Data name="type"><value>Regional</value></Data>
+          </ExtendedData>
+          <Point>
+            <coordinates>4.46028,51.18944,0</coordinates>
+          </Point>
+        </Placemark>
+
+        <Placemark>
+          <name>Ostend-Bruges Airport (EBOS)</name>
+          <styleUrl>#aerodromeStyle</styleUrl>
+          <ExtendedData>
+            <Data name="icao"><value>EBOS</value></Data>
+            <Data name="iata"><value>OST</value></Data>
+            <Data name="type"><value>International</value></Data>
+          </ExtendedData>
+          <Point>
+            <coordinates>2.86222,51.19889,0</coordinates>
+          </Point>
+        </Placemark>
+
+        <Placemark>
+          <name>Liege Airport (EBLG)</name>
+          <styleUrl>#aerodromeStyle</styleUrl>
+          <ExtendedData>
+            <Data name="icao"><value>EBLG</value></Data>
+            <Data name="iata"><value>LGG</value></Data>
+            <Data name="type"><value>Cargo Hub</value></Data>
+          </ExtendedData>
+          <Point>
+            <coordinates>5.44278,50.63722,0</coordinates>
+          </Point>
+        </Placemark>
+
+      </Folder>
+    </Folder>
+  </Document>
+</kml>

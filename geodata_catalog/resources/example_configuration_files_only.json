@@ -1,0 +1,46 @@
+{
+  "datasources": [
+    {
+      "id": "kml-aerodromes",
+      "name": "Aerodromes KML",
+      "datasource_type": "kml",
+      "enabled": true,
+      "config": {
+        "path": "C:/Myworkspace/Copilot/geodata.catalog/geodata_catalog/resources/aerodromes_sample.kml"
+      }
+    },
+    {
+      "id": "geojson-aerodromes",
+      "name": "Aerodromes GeoJSON",
+      "datasource_type": "geojson",
+      "enabled": true,
+      "config": {
+        "path": "C:/Myworkspace/Copilot/geodata.catalog/geodata_catalog/resources/aerodromes_sample.geojson"
+      }
+    }
+  ],
+  "layers": [
+    {
+      "datasource_id": "kml-aerodromes",
+      "layer_name": "Aerodromes",
+      "display_name": "Aerodromes (KML)",
+      "provider_key": "ogr",
+      "provider_uri": "",
+      "business_group": "Network",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "",
+      "metadata": {}
+    },
+    {
+      "datasource_id": "geojson-aerodromes",
+      "layer_name": "aerodromes_sample.geojson",
+      "display_name": "Aerodromes (GeoJSON)",
+      "provider_key": "ogr",
+      "provider_uri": "",
+      "business_group": "Network",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "",
+      "metadata": {}
+    }
+  ]
+}

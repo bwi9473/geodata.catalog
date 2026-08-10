@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DatasourceDialog</class>
+ <widget class="QDialog" name="DatasourceDialog">
+  <property name="windowTitle">
+   <string>Datasource</string>
+  </property>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

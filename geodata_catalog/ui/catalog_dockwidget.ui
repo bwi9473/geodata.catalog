@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CatalogDockWidget</class>
+ <widget class="QDockWidget" name="CatalogDockWidget">
+  <property name="windowTitle">
+   <string>GeoData Catalog</string>
+  </property>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

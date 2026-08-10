@@ -1,0 +1,104 @@
+{
+  "datasources": [
+    {
+      "id": "oracle-airspace",
+      "name": "Airspace Oracle",
+      "datasource_type": "oracle",
+      "enabled": true,
+      "config": {
+        "host": "oracle-host",
+        "port": 1521,
+        "service_name": "ORCLCDB",
+        "username": "GIS_USER",
+        "password": "<secret>",
+        "schema": "AIRSPACE"
+      }
+    },
+    {
+      "id": "rest-flights",
+      "name": "Flights API",
+      "datasource_type": "rest",
+      "enabled": true,
+      "config": {
+        "url": "https://api.example.com/flights",
+        "auth_type": "bearer",
+        "token": "<secret>",
+        "headers": {
+          "Accept": "application/geo+json"
+        },
+        "query_params": {
+          "format": "geojson"
+        },
+        "datasets": [
+          {
+            "name": "Active Flights",
+            "params": {
+              "status": "active"
+            }
+          },
+          {
+            "name": "Planned Flights",
+            "params": {
+              "status": "planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "kml-aerodromes",
+      "name": "Aerodromes KML",
+      "datasource_type": "kml",
+      "enabled": true,
+      "config": {
+        "path": "C:/Myworkspace/Copilot/geodata.catalog/geodata_catalog/resources/aerodromes_sample.kml"
+      }
+    }
+  ],
+  "layers": [
+    {
+      "datasource_id": "oracle-airspace",
+      "layer_name": "AIRSPACE.FIR",
+      "display_name": "FIR",
+      "provider_key": "oracle",
+      "provider_uri": "",
+      "business_group": "Airspace",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "styles/fir.qml",
+      "metadata": {}
+    },
+    {
+      "datasource_id": "oracle-airspace",
+      "layer_name": "AIRSPACE.UIR",
+      "display_name": "UIR",
+      "provider_key": "oracle",
+      "provider_uri": "",
+      "business_group": "Airspace",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "styles/uir.qml",
+      "metadata": {}
+    },
+    {
+      "datasource_id": "rest-flights",
+      "layer_name": "Active Flights",
+      "display_name": "Active Flights",
+      "provider_key": "ogr",
+      "provider_uri": "",
+      "business_group": "Flights",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "styles/flights_active.qml",
+      "metadata": {}
+    },
+    {
+      "datasource_id": "kml-aerodromes",
+      "layer_name": "Aerodromes",
+      "display_name": "Aerodromes",
+      "provider_key": "ogr",
+      "provider_uri": "",
+      "business_group": "Network",
+      "default_crs": "EPSG:4326",
+      "default_style_file": "",
+      "metadata": {}
+    }
+  ]
+}
