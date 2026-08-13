@@ -3,6 +3,7 @@ import json
 from geodata_catalog.metadata.settings_manager import SettingsManager
 from geodata_catalog.metadata.system_configuration_repository import (
     DEFAULT_FLIGHT_LEVEL_PRESETS,
+    DEFAULT_UI_COLORS,
     SystemConfigurationRepository,
 )
 
@@ -28,6 +29,15 @@ def test_load_presets_uses_defaults_without_storage_file_path():
     presets = repository.load_flight_level_presets()
 
     assert presets == DEFAULT_FLIGHT_LEVEL_PRESETS
+
+
+def test_load_ui_colors_uses_defaults_without_storage_file_path():
+    settings = SettingsManager(settings=InMemorySettings())
+    repository = SystemConfigurationRepository(settings)
+
+    colors = repository.load_ui_colors()
+
+    assert colors == DEFAULT_UI_COLORS
 
 
 def test_load_creates_system_configuration_file_with_defaults(tmp_path):
@@ -91,3 +101,32 @@ def test_load_custom_presets_and_normalize_bounds(tmp_path):
         {"name": "MID", "lower": 350, "upper": 450},
         {"name": "UPPER", "lower": 700, "upper": 999},
     ]
+
+
+def test_load_ui_colors_normalizes_invalid_values(tmp_path):
+    settings_file_path = tmp_path / "config.json"
+    settings = SettingsManager(
+        settings=InMemorySettings(),
+        storage_file_path=str(settings_file_path),
+    )
+    repository = SystemConfigurationRepository(settings)
+
+    system_config_file = tmp_path / SystemConfigurationRepository.FILE_NAME
+    system_config_file.write_text(
+        json.dumps(
+            {
+                "ui_colors": {
+                    "primary": "#123abc",
+                    "text": "invalid",
+                    "border": 123,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    colors = repository.load_ui_colors()
+
+    assert colors["primary"] == "#123abc"
+    assert colors["text"] == DEFAULT_UI_COLORS["text"]
+    assert colors["border"] == DEFAULT_UI_COLORS["border"]

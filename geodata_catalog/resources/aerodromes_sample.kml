@@ -15,10 +15,6 @@
         <scale>0.9</scale>
       </LabelStyle>
     </Style>
-
-    <Folder>
-      <name>Network</name>
-
       <Folder>
         <name>Aerodromes</name>
 
@@ -75,6 +71,5 @@
         </Placemark>
 
       </Folder>
-    </Folder>
   </Document>
 </kml>

@@ -24,6 +24,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
         datasource_id="ds1",
         layer_name="LAYER_A",
         layername="Layer A",
+        category_label="Airspace",
         label_column="STATUS",
         enable_fl_filter=False,
         searchable_columns=[{"name": "STATUS", "label": "Status", "type": "varchar"}],
@@ -34,4 +35,5 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
     loaded = repository.get("ds1", "LAYER_A")
 
     assert loaded is not None
+    assert loaded.category_label == "Airspace"
     assert loaded.enable_fl_filter is False
