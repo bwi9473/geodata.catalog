@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="232" viewBox="0 0 368 232">
+  <rect width="368" height="232" fill="#f9fafb"/>
+  <g stroke="#d3d9e2" stroke-width="2">
+    <path d="M0 44 H368"/><path d="M0 88 H368"/><path d="M0 132 H368"/><path d="M0 176 H368"/>
+    <path d="M60 0 V232"/><path d="M120 0 V232"/><path d="M180 0 V232"/><path d="M240 0 V232"/><path d="M300 0 V232"/>
+  </g>
+  <path d="M8 156 C66 124, 126 170, 184 142 C244 114, 302 162, 360 132" fill="none" stroke="#8ba0bc" stroke-width="8"/>
+  <path d="M32 194 L102 128 L166 176 L240 116 L330 168" fill="none" stroke="#7dd3fc" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="102" cy="128" r="7" fill="#334155"/>
+  <circle cx="240" cy="116" r="7" fill="#334155"/>
+  <rect x="10" y="10" width="182" height="34" rx="7" fill="#ffffff"/>
+  <text x="20" y="32" fill="#111827" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">CartoDB Positron</text>
+</svg>

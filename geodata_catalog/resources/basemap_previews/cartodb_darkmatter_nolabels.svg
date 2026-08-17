@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="232" viewBox="0 0 368 232">
+  <rect width="368" height="232" fill="#111827"/>
+  <g stroke="#243244" stroke-width="2">
+    <path d="M0 44 H368"/><path d="M0 88 H368"/><path d="M0 132 H368"/><path d="M0 176 H368"/>
+    <path d="M60 0 V232"/><path d="M120 0 V232"/><path d="M180 0 V232"/><path d="M240 0 V232"/><path d="M300 0 V232"/>
+  </g>
+  <path d="M8 150 C66 120, 126 164, 184 136 C244 108, 302 156, 360 128" fill="none" stroke="#60a5fa" stroke-width="8"/>
+  <path d="M32 192 L108 126 L170 176 L244 112 L330 164" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="108" cy="126" r="7" fill="#f59e0b"/>
+  <circle cx="244" cy="112" r="7" fill="#f59e0b"/>
+  <rect x="10" y="10" width="266" height="34" rx="7" fill="#0b1220"/>
+  <text x="20" y="32" fill="#e2e8f0" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">CartoDB Dark Matter (No Labels)</text>
+</svg>

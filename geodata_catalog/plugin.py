@@ -20,12 +20,14 @@ from geodata_catalog.services.layer_filter_service import (
     LayerFilterService,
 )
 from geodata_catalog.services.layer_service import LayerService
+from geodata_catalog.services.layer_toolbox_service import LayerToolboxService
 from geodata_catalog.services.qgis_loader_service import QgisLoaderService
 from geodata_catalog.services.style_service import StyleService
 from geodata_catalog.ui.catalog_dockwidget import CatalogDockWidget
 from geodata_catalog.ui.datasource_dialog import DatasourceDialog
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
+from geodata_catalog.ui.layer_toolbox_dock import LayerToolboxDock
 from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 
 from qgis.PyQt.QtCore import Qt
@@ -68,12 +70,18 @@ class GeoDataCatalogPlugin:
         )
         self._style_service = StyleService(self._logger)
         self._loader_service = QgisLoaderService(self._style_service, self._logger)
+        self._layer_toolbox_service = LayerToolboxService(
+            self._logger,
+            settings_manager=self._settings_manager,
+        )
 
         self._action: QAction | None = None
         self._open_catalog_action: QAction | None = None
         self._open_loadable_layers_action: QAction | None = None
+        self._open_layer_toolbox_action: QAction | None = None
         self._dock_widget: CatalogDockWidget | None = None
         self._loadable_layers_dock: LoadableLayersDockWidget | None = None
+        self._layer_toolbox_dock: LayerToolboxDock | None = None
         self._layer_cache: dict[str, dict[str, LayerDefinition]] = {}
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
@@ -96,6 +104,12 @@ class GeoDataCatalogPlugin:
                 "GeoData Catalog/GeoData Catalog", self._open_loadable_layers_action
             )
 
+            self._open_layer_toolbox_action = QAction("Open Layer Toolbox", self.iface.mainWindow())
+            self._open_layer_toolbox_action.triggered.connect(self._show_layer_toolbox_dock)
+            self.iface.addPluginToMenu(
+                "GeoData Catalog/GeoData Catalog", self._open_layer_toolbox_action
+            )
+
             self._show_dock()
             self._logger.info("GeoData Catalog initialized")
         except Exception as exc:
@@ -113,6 +127,11 @@ class GeoDataCatalogPlugin:
             self._loadable_layers_dock.deleteLater()
             self._loadable_layers_dock = None
 
+        if self._layer_toolbox_dock is not None:
+            self.iface.removeDockWidget(self._layer_toolbox_dock)
+            self._layer_toolbox_dock.deleteLater()
+            self._layer_toolbox_dock = None
+
         if self._action is not None:
             self.iface.removeToolBarIcon(self._action)
             self._action = None
@@ -126,6 +145,12 @@ class GeoDataCatalogPlugin:
                 "GeoData Catalog/GeoData Catalog", self._open_loadable_layers_action
             )
             self._open_loadable_layers_action = None
+
+        if self._open_layer_toolbox_action is not None:
+            self.iface.removePluginMenu(
+                "GeoData Catalog/GeoData Catalog", self._open_layer_toolbox_action
+            )
+            self._open_layer_toolbox_action = None
 
         self._logger.info("GeoData Catalog unloaded")
 
@@ -160,6 +185,20 @@ class GeoDataCatalogPlugin:
             self._loadable_layers_dock.setFloating(True)
         self._loadable_layers_dock.show()
         self._refresh_all_layers_view()
+
+    def _show_layer_toolbox_dock(self) -> None:
+        if self._layer_toolbox_dock is None:
+            self._layer_toolbox_dock = LayerToolboxDock(
+                self.iface.mainWindow(),
+                toolbox_service=self._layer_toolbox_service,
+                logger=self._logger,
+                iface=self.iface,
+            )
+            self.iface.addDockWidget(self._dock_area(), self._layer_toolbox_dock)
+            self._try_tabify_with_core_docks(self._layer_toolbox_dock)
+        self._layer_toolbox_service.ensure_preferred_basemap_loaded()
+        self._layer_toolbox_dock.refresh_layers()
+        self._layer_toolbox_dock.show()
 
     def _ensure_layer_panel_filter_action(self) -> None:
         """Register layer filter action in layer panel context menu."""
@@ -274,14 +313,16 @@ class GeoDataCatalogPlugin:
             self._show_error("Edit Datasource", str(exc))
 
     def _on_delete_source(self, datasource_id: str) -> None:
+        yes_button = self._messagebox_yes_button()
+        no_button = self._messagebox_no_button()
         answer = QMessageBox.question(
             self.iface.mainWindow(),
             "Delete Datasource",
             "Delete selected datasource?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes_button | no_button,
+            no_button,
         )
-        if answer != QMessageBox.Yes:
+        if answer != yes_button:
             return
         try:
             self._datasource_service.delete_datasource(datasource_id)
@@ -807,5 +848,19 @@ class GeoDataCatalogPlugin:
         if accepted is not None:
             return accepted
         return dialog.DialogCode.Accepted
+
+    @staticmethod
+    def _messagebox_yes_button():
+        yes_button = getattr(QMessageBox, "Yes", None)
+        if yes_button is not None:
+            return yes_button
+        return QMessageBox.StandardButton.Yes
+
+    @staticmethod
+    def _messagebox_no_button():
+        no_button = getattr(QMessageBox, "No", None)
+        if no_button is not None:
+            return no_button
+        return QMessageBox.StandardButton.No
 
 

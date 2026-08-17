@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="232" viewBox="0 0 368 232">
+  <rect width="368" height="232" fill="#eef2f6"/>
+  <g stroke="#c2cad5" stroke-width="2">
+    <path d="M0 40 H368"/><path d="M0 80 H368"/><path d="M0 120 H368"/><path d="M0 160 H368"/><path d="M0 200 H368"/>
+    <path d="M46 0 V232"/><path d="M92 0 V232"/><path d="M138 0 V232"/><path d="M184 0 V232"/><path d="M230 0 V232"/><path d="M276 0 V232"/><path d="M322 0 V232"/>
+  </g>
+  <path d="M6 150 C60 130, 128 166, 184 142 C246 116, 310 164, 362 138" fill="none" stroke="#8a9aad" stroke-width="9"/>
+  <path d="M24 188 L98 132 L172 178 L252 120 L338 166" fill="none" stroke="#64748b" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="98" cy="132" r="7" fill="#334155"/>
+  <circle cx="252" cy="120" r="7" fill="#334155"/>
+  <rect x="10" y="10" width="212" height="34" rx="7" fill="#f8fafc"/>
+  <text x="20" y="32" fill="#1f2937" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">Esri World Gray Canvas</text>
+</svg>
