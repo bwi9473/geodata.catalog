@@ -121,9 +121,7 @@ class CatalogDockWidget(QDockWidget):
 
         database_root = QTreeWidgetItem(["Database Sources"])
         oracle_root = QTreeWidgetItem(["Oracle"])
-        postgis_root = QTreeWidgetItem(["PostGIS"])
         database_root.addChild(oracle_root)
-        database_root.addChild(postgis_root)
 
         rest_root = QTreeWidgetItem(["REST Sources"])
         file_root = QTreeWidgetItem(["File Sources"])
@@ -143,8 +141,6 @@ class CatalogDockWidget(QDockWidget):
 
             if datasource.datasource_type is DatasourceType.ORACLE:
                 oracle_root.addChild(item)
-            elif datasource.datasource_type is DatasourceType.POSTGIS:
-                postgis_root.addChild(item)
             elif datasource.datasource_type is DatasourceType.REST:
                 rest_root.addChild(item)
             elif datasource.datasource_type is DatasourceType.GEOJSON:

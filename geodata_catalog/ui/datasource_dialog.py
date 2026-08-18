@@ -53,7 +53,6 @@ class DatasourceDialog(QDialog):
 
         self._type_combo = QComboBox()
         self._type_combo.addItem("Oracle", DatasourceType.ORACLE)
-        self._type_combo.addItem("PostGIS", DatasourceType.POSTGIS)
         self._type_combo.addItem("GeoJSON", DatasourceType.GEOJSON)
         self._type_combo.addItem("KML", DatasourceType.KML)
         self._type_combo.addItem("REST", DatasourceType.REST)

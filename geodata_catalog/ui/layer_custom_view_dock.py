@@ -540,7 +540,8 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setSelectionBehavior(self._table.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(self._table.SelectionMode.SingleSelection)
-        self._table.itemSelectionChanged.connect(self._on_row_selection_changed)
+        # Do not connect itemSelectionChanged to map selection to avoid
+        # triggering external plugins that listen to QGIS layer selection events.
         self._table.itemChanged.connect(self._on_item_changed)
 
         self._table.setColumnWidth(0, 28)

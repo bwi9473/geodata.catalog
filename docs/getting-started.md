@@ -11,7 +11,6 @@ This guide walks you through installing GeoData Catalog, activating the plugin, 
 | QGIS | 3.22 |
 | Python | 3.9 (bundled with QGIS) |
 | `oracledb` | 2.2.0 (only for Oracle sources) |
-| `psycopg[binary]` | 3.2.0 (only for PostGIS sources) |
 | `requests` | 2.32.0 (only for REST sources) |
 
 > **File sources (KML, GeoJSON) have no extra Python dependencies.** They work with the standard QGIS/OGR stack.
@@ -55,9 +54,6 @@ Open the **OSGeo4W Shell** (Windows) or a terminal where the QGIS Python is on t
 ```bash
 # For Oracle support
 pip install python-oracledb>=2.2.0
-
-# For PostGIS support
-pip install "psycopg[binary]>=3.2.0"
 
 # For REST source support
 pip install requests>=2.32.0
@@ -241,8 +237,7 @@ geodata_catalog/resources/aerodromes_sample.geojson
 GeoData Catalog panel
 ├── Datasource Tree
 │   ├── Database Sources
-│   │   ├── Oracle           ← lists Oracle datasources
-│   │   └── PostGIS          ← lists PostGIS datasources
+│   │   └── Oracle           ← lists Oracle datasources
 │   ├── REST Sources         ← lists REST datasources
 │   └── File Sources
 │       ├── GeoJSON          ← lists GeoJSON datasources

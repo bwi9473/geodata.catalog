@@ -121,4 +121,6 @@ class QgisLoaderService:
         labeling = QgsVectorLayerSimpleLabeling(settings)
         layer.setLabeling(labeling)
         layer.setLabelsEnabled(True)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
         self._logger.info(f"Applied label column '{label_column}' to layer '{layer.name()}'")

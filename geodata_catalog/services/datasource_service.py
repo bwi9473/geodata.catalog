@@ -8,7 +8,6 @@ from geodata_catalog.connectors.base_connector import BaseConnector
 from geodata_catalog.connectors.geojson_connector import GeoJsonConnector
 from geodata_catalog.connectors.kml_connector import KmlConnector
 from geodata_catalog.connectors.oracle_connector import OracleConnector
-from geodata_catalog.connectors.postgis_connector import PostgisConnector
 from geodata_catalog.connectors.rest_connector import RestConnector
 from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.logging_utils import PluginLogger
@@ -65,7 +64,6 @@ class DatasourceService:
     def get_connector(self, datasource: Datasource) -> BaseConnector:
         connector_map: dict[DatasourceType, type[BaseConnector]] = {
             DatasourceType.ORACLE: OracleConnector,
-            DatasourceType.POSTGIS: PostgisConnector,
             DatasourceType.GEOJSON: GeoJsonConnector,
             DatasourceType.KML: KmlConnector,
             DatasourceType.REST: RestConnector,

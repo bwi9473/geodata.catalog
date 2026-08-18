@@ -31,8 +31,7 @@ Field names are **case-sensitive** and must be lowercase.
 1. [KML / KMZ files](#1-kml--kmz-files)
 2. [GeoJSON files](#2-geojson-files)
 3. [Oracle Spatial](#3-oracle-spatial)
-4. [PostGIS](#4-postgis)
-5. [REST GeoJSON endpoints](#5-rest-geojson-endpoints)
+4. [REST GeoJSON endpoints](#4-rest-geojson-endpoints)
 
 ---
 
@@ -233,82 +232,7 @@ The connector queries `ALL_SDO_GEOM_METADATA` joined to `ALL_OBJECTS` and `ALL_T
 
 ---
 
-## 4. PostGIS
-
-The PostGIS connector discovers all geometry columns registered in `geometry_columns`. It uses `psycopg` (version 3) for the database connection and the QGIS PostgreSQL provider for loading.
-
-> **Prerequisite:** `psycopg[binary]` must be installed in the QGIS Python environment.
-> ```bash
-> pip install "psycopg[binary]>=3.2.0"
-> ```
-
-### Configuration fields
-
-| Field | Required | Type | Default | Description |
-|---|---|---|---|---|
-| `host` | ✅ | string | — | PostgreSQL server hostname or IP address |
-| `port` | | integer | `5432` | PostgreSQL server port |
-| `database` | ✅ | string | — | Database name |
-| `username` | ✅ | string | — | Database username |
-| `password` | ✅ | string | — | Database password |
-| `key_column` | | string | `""` | Primary key column name for the QGIS provider |
-| `label_column` | | string | `null` | Global default field name to use as the QGIS feature label for all layers in this source. Can be overridden per layer via **right-click → Edit Layer Config**. |
-
-### Minimal example
-
-```json
-{
-  "host": "postgis.example.com",
-  "database": "gisdb",
-  "username": "gis_user",
-  "password": "secret"
-}
-```
-
-### Production example
-
-```json
-{
-  "host": "postgis.example.com",
-  "port": 5432,
-  "database": "gisdb",
-  "username": "gis_read",
-  "password": "secret",
-  "key_column": "gid"
-}
-```
-
-### Local database (Docker / localhost)
-
-```json
-{
-  "host": "localhost",
-  "port": 5432,
-  "database": "mydb",
-  "username": "postgres",
-  "password": "postgres"
-}
-```
-
-### How layers are discovered
-
-The connector selects all rows from the `geometry_columns` view, ordered by schema and table name. For each row it:
-
-- Reads the schema, table name, geometry column, SRID, and geometry type.
-- Counts features with `SELECT COUNT(*)`.
-- Builds a QGIS `QgsDataSourceUri` connection string.
-
-Layer names are in the form `schema.table_name` (e.g. `public.airspace_fir`).
-
-### Tips
-
-- Use a **read-only** database role with `SELECT` privileges on the relevant schemas.
-- Layers from **all** schemas in `geometry_columns` are discovered unless you filter in your PostgreSQL role.
-- The `key_column` field is optional but helps QGIS identify features uniquely — set it to your primary key column (commonly `gid` or `id`).
-
----
-
-## 5. REST GeoJSON Endpoints
+## 4. REST GeoJSON Endpoints
 
 The REST connector fetches GeoJSON from an HTTP endpoint. It supports no authentication, HTTP Basic Authentication, and Bearer token authentication. Multiple datasets (different query parameters on the same base URL) can be grouped under one datasource.
 

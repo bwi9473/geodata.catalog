@@ -477,6 +477,25 @@ class GeoDataCatalogPlugin:
         self._open_unified_filter_custom_view(qgis_layer, layer_def)
 
     def _open_unified_filter_custom_view(self, layer, layer_def: LayerDefinition | None) -> None:
+        # If a window is already open for this layer, bring it to focus instead of opening a second one.
+        # Use layer.id() for comparison because QGIS may return different Python wrapper objects
+        # for the same underlying layer, making identity checks ('is') unreliable.
+        try:
+            incoming_layer_id = layer.id() if layer is not None and hasattr(layer, "id") else None
+        except Exception:
+            incoming_layer_id = None
+
+        if incoming_layer_id is not None:
+            for existing_window in list(self._custom_view_docks):
+                try:
+                    existing_id = existing_window._layer.id() if existing_window._layer is not None and hasattr(existing_window._layer, "id") else None
+                except Exception:
+                    existing_id = None
+                if existing_id is not None and existing_id == incoming_layer_id:
+                    existing_window.raise_()
+                    existing_window.activateWindow()
+                    return
+
         existing_subset = layer.subsetString() or ""
         current_fl = LayerFilterService.parse_fl_from_subset_string(existing_subset)
 

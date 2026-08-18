@@ -268,3 +268,34 @@ def test_build_fl_range_expression_and_label():
 
     assert expr == '"fl_lower" = 355 AND "fl_upper" = 999'
     assert label == "355 - 999"
+
+
+class _FakeWkbTypes:
+    PolygonGeometry = 1
+    LineGeometry = 2
+    PointGeometry = 3
+
+    @staticmethod
+    def geometryType(value):
+        return value
+
+
+class _FakeVectorLayerForGeometry:
+    def __init__(self, geometry_type: int) -> None:
+        self._geometry_type = geometry_type
+
+    def wkbType(self) -> int:
+        return self._geometry_type
+
+
+def test_vertex_source_layer_accepts_polygon_and_linestring(monkeypatch):
+    monkeypatch.setattr(layer_toolbox_module, "QgsWkbTypes", _FakeWkbTypes)
+    service = LayerToolboxService(logger=_FakeLogger(), project=None)
+
+    polygon_layer = _FakeVectorLayerForGeometry(_FakeWkbTypes.PolygonGeometry)
+    line_layer = _FakeVectorLayerForGeometry(_FakeWkbTypes.LineGeometry)
+    point_layer = _FakeVectorLayerForGeometry(_FakeWkbTypes.PointGeometry)
+
+    assert service._is_vertex_source_layer(polygon_layer) is True
+    assert service._is_vertex_source_layer(line_layer) is True
+    assert service._is_vertex_source_layer(point_layer) is False

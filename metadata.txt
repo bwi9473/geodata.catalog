@@ -2,7 +2,7 @@
 name=GeoData Catalog
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
-description=Metadata-driven geospatial dataset catalog for Oracle, PostGIS, files and REST GeoJSON.
+description=Metadata-driven geospatial dataset catalog for Oracle, files and REST GeoJSON.
 version=1.0.0
 author=GeoData Team
 email=geodata@example.com

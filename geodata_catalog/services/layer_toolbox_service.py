@@ -102,13 +102,15 @@ class LayerToolboxService:
         self._project = project or (QgsProject.instance() if QgsProject else None)
         self._settings_manager = settings_manager
 
-    def set_polygon_vertices_visible(self, layer, visible: bool) -> None:
-        """Toggle a helper point layer that shows all polygon vertices."""
+    def set_vertices_visible(self, layer, visible: bool) -> None:
+        """Toggle a helper point layer that shows all vertices for polygon and line layers."""
         if self._project is None:
-            self._logger.warning("Cannot toggle polygon vertices: QGIS project is unavailable.")
+            self._logger.warning("Cannot toggle vertices: QGIS project is unavailable.")
             return
-        if not self._is_vector_layer(layer) or not self._is_polygon_layer(layer):
-            self._logger.warning("Cannot toggle polygon vertices: selected layer is not polygonal.")
+        if not self._is_vector_layer(layer) or not self._is_vertex_source_layer(layer):
+            self._logger.warning(
+                "Cannot toggle vertices: selected layer is not polygon or line-based."
+            )
             return
 
         if not visible:
@@ -131,6 +133,10 @@ class LayerToolboxService:
         self._logger.info(
             f"Vertex helper layer created for '{layer.name()}' with {len(features)} vertices."
         )
+
+    def set_polygon_vertices_visible(self, layer, visible: bool) -> None:
+        """Backward-compatible wrapper for legacy callers."""
+        self.set_vertices_visible(layer, visible)
 
     def set_point_connections_visible(
         self,
@@ -513,6 +519,21 @@ class LayerToolboxService:
             return geom_type == QgsWkbTypes.PointGeometry
         except Exception:
             return False
+
+    def _is_line_layer(self, layer) -> bool:
+        if QgsWkbTypes is None or layer is None:
+            return False
+        wkb_type_fn = getattr(layer, "wkbType", None)
+        if not callable(wkb_type_fn):
+            return False
+        try:
+            geom_type = QgsWkbTypes.geometryType(wkb_type_fn())
+            return geom_type == QgsWkbTypes.LineGeometry
+        except Exception:
+            return False
+
+    def _is_vertex_source_layer(self, layer) -> bool:
+        return self._is_polygon_layer(layer) or self._is_line_layer(layer)
 
     def _create_memory_layer(self, geometry_type: str, layer_name: str, source_layer):
         if QgsVectorLayer is None:

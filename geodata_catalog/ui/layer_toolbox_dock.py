@@ -136,9 +136,9 @@ class LayerToolboxDock(QDockWidget):
         layer_row.addWidget(self._refresh_btn)
         root.addLayout(layer_row)
 
-        polygon_group = QGroupBox("Polygon tools")
+        polygon_group = QGroupBox("Polygon and line tools")
         polygon_form = QFormLayout(polygon_group)
-        self._polygon_vertices_check = QCheckBox("Show polygon vertices")
+        self._polygon_vertices_check = QCheckBox("Show all vertices")
         self._polygon_vertices_check.toggled.connect(self._on_polygon_vertices_toggled)
         polygon_form.addRow("Vertices", self._polygon_vertices_check)
         root.addWidget(polygon_group)
@@ -350,7 +350,7 @@ class LayerToolboxDock(QDockWidget):
 
     def _sync_toggle_states(self) -> None:
         layer = self._selected_layer()
-        polygon_enabled = self._is_polygon_layer(layer)
+        polygon_enabled = self._is_polygon_layer(layer) or self._is_line_layer(layer)
         point_enabled = self._is_point_layer(layer)
 
         self._polygon_vertices_check.setEnabled(polygon_enabled)
@@ -380,7 +380,7 @@ class LayerToolboxDock(QDockWidget):
         layer = self._selected_layer()
         if layer is None:
             return
-        self._toolbox_service.set_polygon_vertices_visible(layer, checked)
+        self._toolbox_service.set_vertices_visible(layer, checked)
 
     def _on_point_connections_toggled(self, checked: bool) -> None:
         if self._updating_ui:
@@ -484,5 +484,13 @@ class LayerToolboxDock(QDockWidget):
             return False
         try:
             return QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PointGeometry
+        except Exception:
+            return False
+
+    def _is_line_layer(self, layer) -> bool:
+        if layer is None or QgsWkbTypes is None:
+            return False
+        try:
+            return QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.LineGeometry
         except Exception:
             return False

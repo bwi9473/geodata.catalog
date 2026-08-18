@@ -3,7 +3,7 @@
 **Version:** 1.0.0  
 **QGIS compatibility:** 3.22 and later (including 4.x)
 
-GeoData Catalog is a metadata-driven QGIS plugin that provides a unified catalog for discovering, configuring and loading geospatial datasets from multiple source types: Oracle Spatial, PostGIS, local GeoJSON files, local KML files, and GeoJSON REST endpoints.
+GeoData Catalog is a metadata-driven QGIS plugin that provides a unified catalog for discovering, configuring and loading geospatial datasets from multiple source types: Oracle Spatial, local GeoJSON files, local KML files, and GeoJSON REST endpoints.
 
 ---
 
@@ -26,7 +26,6 @@ GeoData Catalog is a metadata-driven QGIS plugin that provides a unified catalog
 | KML | `kml` | Local `.kml` or `.kmz` file with OGR/QGIS sublayer discovery |
 | GeoJSON | `geojson` | Local `.geojson` / `.json` file or directory |
 | Oracle Spatial | `oracle` | Oracle database with SDO_GEOMETRY columns |
-| PostGIS | `postgis` | PostgreSQL/PostGIS database via `geometry_columns` |
 | REST GeoJSON | `rest` | HTTP endpoint returning GeoJSON `FeatureCollection` |
 
 ---
