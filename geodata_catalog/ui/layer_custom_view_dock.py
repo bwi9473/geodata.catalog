@@ -1255,22 +1255,13 @@ class LayerCustomViewWindow(QMainWindow):
         if item.column() != 0:
             return
         fid = item.data(_ITEM_FLAGS["user_role"])
-        if fid is None or fid < 0 or self._layer is None:
+        if fid is None or fid < 0:
             return
 
         if item.checkState() == _ITEM_FLAGS["checked"]:
             self._checked_fids.add(fid)
         else:
             self._checked_fids.discard(fid)
-
-        try:
-            if self._checked_fids:
-                self._layer.selectByIds(sorted(self._checked_fids))
-            else:
-                self._layer.removeSelection()
-        except Exception as exc:
-            if self._logger is not None:
-                self._logger.warning(f"Unable to apply checkbox selection on map: {exc}")
 
     def _on_row_selection_changed(self) -> None:
         if self._layer is None:

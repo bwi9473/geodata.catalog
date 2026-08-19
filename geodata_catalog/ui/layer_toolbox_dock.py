@@ -7,6 +7,7 @@ from geodata_catalog.services.layer_toolbox_service import LayerToolboxService
 
 try:
     from qgis.core import QgsMapLayerType, QgsProject, QgsWkbTypes
+    from qgis.gui import QgsMapToolEmitPoint
     from qgis.PyQt.QtCore import QSize, Qt
     from qgis.PyQt.QtGui import QIcon, QPixmap
     from qgis.PyQt.QtWidgets import (
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover
     QgsMapLayerType = None
     QgsProject = None
     QgsWkbTypes = None
+    QgsMapToolEmitPoint = None
     QSize = None
     Qt = None
     QIcon = None
@@ -80,12 +82,18 @@ class LayerToolboxDock(QDockWidget):
         self._basemap_tile_layout = None
         self._basemap_tile_buttons = {}
         self._focus_muac_btn = None
+        self._place_marker_btn = None
+        self._reset_marker_btn = None
+        self._marker_map_tool = None
+        self._previous_map_tool = None
         self._fl_lower_field_combo = None
         self._fl_upper_field_combo = None
         self._apply_fl_rules_btn = None
 
         self._build_ui()
         self.refresh_layers()
+        self._restore_saved_marker_if_any()
+        self._sync_marker_controls()
 
     def _build_ui(self) -> None:
         body = QWidget(self)
@@ -121,6 +129,16 @@ class LayerToolboxDock(QDockWidget):
         self._focus_muac_btn = QPushButton("Focus MUAC")
         self._focus_muac_btn.clicked.connect(self._on_focus_muac_clicked)
         map_buttons.addWidget(self._focus_muac_btn)
+
+        self._place_marker_btn = QPushButton("Place Marker")
+        self._place_marker_btn.setCheckable(True)
+        self._place_marker_btn.toggled.connect(self._on_place_marker_toggled)
+        map_buttons.addWidget(self._place_marker_btn)
+
+        self._reset_marker_btn = QPushButton("Reset Marker")
+        self._reset_marker_btn.clicked.connect(self._on_reset_marker_clicked)
+        map_buttons.addWidget(self._reset_marker_btn)
+
         map_buttons.addStretch(1)
         map_layout.addLayout(map_buttons)
 
@@ -303,6 +321,7 @@ class LayerToolboxDock(QDockWidget):
             self._sync_selected_basemap_tile()
             self._refresh_field_combos()
             self._sync_toggle_states()
+            self._sync_marker_controls()
         finally:
             self._updating_ui = False
 
@@ -435,6 +454,73 @@ class LayerToolboxDock(QDockWidget):
 
     def _on_focus_muac_clicked(self) -> None:
         self._toolbox_service.focus_muac_on_canvas(self._iface)
+
+    def _on_place_marker_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self._activate_marker_mode()
+            return
+        self._deactivate_marker_mode()
+
+    def _activate_marker_mode(self) -> None:
+        if self._iface is None or QgsMapToolEmitPoint is None:
+            if self._place_marker_btn is not None:
+                self._place_marker_btn.setChecked(False)
+            return
+
+        canvas = getattr(self._iface, "mapCanvas", lambda: None)()
+        if canvas is None:
+            if self._place_marker_btn is not None:
+                self._place_marker_btn.setChecked(False)
+            return
+
+        if self._marker_map_tool is None:
+            self._marker_map_tool = QgsMapToolEmitPoint(canvas)
+            self._marker_map_tool.canvasClicked.connect(self._on_canvas_marker_clicked)
+
+        self._previous_map_tool = canvas.mapTool() if hasattr(canvas, "mapTool") else None
+        canvas.setMapTool(self._marker_map_tool)
+
+    def _deactivate_marker_mode(self) -> None:
+        if self._iface is None:
+            return
+        canvas = getattr(self._iface, "mapCanvas", lambda: None)()
+        if canvas is None:
+            return
+        if self._marker_map_tool is not None and hasattr(canvas, "mapTool"):
+            try:
+                if canvas.mapTool() == self._marker_map_tool and self._previous_map_tool is not None:
+                    canvas.setMapTool(self._previous_map_tool)
+            except Exception:
+                pass
+
+    def _on_canvas_marker_clicked(self, point, _button) -> None:
+        marker_path = self._interactive_marker_svg_path()
+        self._toolbox_service.add_interactive_svg_marker(
+            point=point,
+            iface=self._iface,
+            svg_path=str(marker_path),
+        )
+        if self._place_marker_btn is not None:
+            self._place_marker_btn.setChecked(False)
+        self._sync_marker_controls()
+
+    def _on_reset_marker_clicked(self) -> None:
+        self._toolbox_service.reset_saved_interactive_marker(self._iface)
+        self._sync_marker_controls()
+
+    def _restore_saved_marker_if_any(self) -> None:
+        self._toolbox_service.restore_saved_interactive_marker(
+            iface=self._iface,
+            svg_path=str(self._interactive_marker_svg_path()),
+        )
+
+    def _sync_marker_controls(self) -> None:
+        if self._reset_marker_btn is None:
+            return
+        self._reset_marker_btn.setEnabled(self._toolbox_service.has_saved_interactive_marker())
+
+    def _interactive_marker_svg_path(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "resources" / "interactive_map_marker.svg"
 
     def _on_apply_fl_rules_clicked(self) -> None:
         layer = self._selected_layer()

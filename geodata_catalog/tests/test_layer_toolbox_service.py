@@ -110,6 +110,9 @@ class _FakeSettingsManager:
     def set_json(self, key: str, value) -> None:
         self._values[key] = value
 
+    def remove(self, key: str) -> None:
+        self._values.pop(key, None)
+
 
 def test_resolve_group_key_defaults_to_all_without_group_field():
     feat = _FakeFeature({"grp": "A"}, fid=5)
@@ -237,6 +240,48 @@ def test_ensure_preferred_basemap_loaded_applies_saved_choice(monkeypatch):
 
 def test_muac_extent_wgs84_has_expected_bounds():
     assert LayerToolboxService.muac_extent_wgs84() == (2.0, 48.5, 12.5, 56.0)
+
+
+def test_add_interactive_svg_marker_fails_without_project():
+    service = LayerToolboxService(logger=_FakeLogger(), project=None)
+
+    result = service.add_interactive_svg_marker(point=object(), iface=None, svg_path="marker.svg")
+
+    assert result is False
+
+
+def test_add_interactive_svg_marker_fails_without_qgis_geometry_classes():
+    project = _FakeProject()
+    service = LayerToolboxService(logger=_FakeLogger(), project=project)
+
+    result = service.add_interactive_svg_marker(point=object(), iface=None, svg_path="marker.svg")
+
+    assert result is False
+
+
+def test_has_saved_interactive_marker_reads_settings_payload():
+    settings = _FakeSettingsManager(
+        {
+            "layer_toolbox/interactive_marker": {"x": 4.2, "y": 50.7, "crs": "EPSG:4326"}
+        }
+    )
+    service = LayerToolboxService(logger=_FakeLogger(), project=None, settings_manager=settings)
+
+    assert service.has_saved_interactive_marker() is True
+
+
+def test_reset_saved_interactive_marker_clears_settings_when_present():
+    settings = _FakeSettingsManager(
+        {
+            "layer_toolbox/interactive_marker": {"x": 4.2, "y": 50.7, "crs": "EPSG:4326"}
+        }
+    )
+    service = LayerToolboxService(logger=_FakeLogger(), project=None, settings_manager=settings)
+
+    result = service.reset_saved_interactive_marker(iface=None)
+
+    assert result is True
+    assert settings.get_json("layer_toolbox/interactive_marker", None) is None
 
 
 def test_extract_flight_level_ranges_collects_unique_sorted_ranges():

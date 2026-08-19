@@ -17,12 +17,14 @@ try:
         QgsField,
         QgsGeometry,
         QgsMapLayerType,
+        QgsMarkerSymbol,
         QgsPointXY,
         QgsProject,
         QgsRasterLayer,
         QgsRectangle,
         QgsRendererCategory,
         QgsRuleBasedRenderer,
+        QgsSvgMarkerSymbolLayer,
         QgsSymbol,
         QgsVectorLayer,
         QgsWkbTypes,
@@ -39,12 +41,14 @@ except ImportError:  # pragma: no cover
     QgsField = None
     QgsGeometry = None
     QgsMapLayerType = None
+    QgsMarkerSymbol = None
     QgsPointXY = None
     QgsProject = None
     QgsRasterLayer = None
     QgsRectangle = None
     QgsRendererCategory = None
     QgsRuleBasedRenderer = None
+    QgsSvgMarkerSymbolLayer = None
     QgsSymbol = None
     QgsVectorLayer = None
     QgsWkbTypes = None
@@ -61,6 +65,9 @@ class LayerToolboxService:
     HELPER_KIND_PROPERTY = "geodata_catalog/helper_kind"
     BASEMAP_NAME_PROPERTY = "geodata_catalog/basemap_name"
     BASEMAP_KIND = "background_basemap"
+    INTERACTIVE_MARKER_KIND = "interactive_svg_marker"
+    INTERACTIVE_MARKER_LAYER_NAME = "Interactive Map Marker"
+    INTERACTIVE_MARKER_SETTINGS_KEY = "layer_toolbox/interactive_marker"
     BASEMAP_DEFAULT = "World Map"
     BASEMAP_SETTINGS_KEY = "layer_toolbox/selected_basemap"
     MUAC_EXTENT_WGS84 = (2.0, 49.0, 9.5, 53.8)
@@ -485,6 +492,71 @@ class LayerToolboxService:
         )
         return True
 
+    def add_interactive_svg_marker(self, point, iface, svg_path: str) -> bool:
+        if self._project is None:
+            self._logger.warning("Cannot add marker: QGIS project is unavailable.")
+            return False
+        if point is None or QgsFeature is None or QgsGeometry is None or QgsPointXY is None:
+            self._logger.warning("Cannot add marker: invalid map point or geometry classes unavailable.")
+            return False
+
+        canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
+        marker_layer = self._find_helper_layer("", self.INTERACTIVE_MARKER_KIND)
+
+        if marker_layer is None:
+            marker_layer = self._create_interactive_marker_layer(canvas)
+            if marker_layer is None:
+                return False
+            self._project.addMapLayer(marker_layer)
+
+        feature = QgsFeature()
+        feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(point.x(), point.y())))
+
+        provider = marker_layer.dataProvider() if hasattr(marker_layer, "dataProvider") else None
+        if provider is None:
+            self._logger.warning("Cannot add marker: marker layer has no provider.")
+            return False
+
+        self._clear_marker_features(marker_layer)
+        provider.addFeatures([feature])
+        marker_layer.updateExtents()
+        self._apply_interactive_marker_style(marker_layer, svg_path)
+        self._save_interactive_marker(point, canvas)
+        if hasattr(marker_layer, "triggerRepaint"):
+            marker_layer.triggerRepaint()
+        if canvas is not None and hasattr(canvas, "refresh"):
+            canvas.refresh()
+        self._logger.info("Interactive SVG marker added to map.")
+        return True
+
+    def has_saved_interactive_marker(self) -> bool:
+        marker_data = self._load_saved_interactive_marker_data()
+        return marker_data is not None
+
+    def restore_saved_interactive_marker(self, iface, svg_path: str) -> bool:
+        marker_data = self._load_saved_interactive_marker_data()
+        if marker_data is None:
+            return False
+        if QgsPointXY is None:
+            return False
+
+        point = self._point_from_saved_marker(marker_data, iface)
+        if point is None:
+            return False
+        return self.add_interactive_svg_marker(point=point, iface=iface, svg_path=svg_path)
+
+    def reset_saved_interactive_marker(self, iface) -> bool:
+        cleared = self._remove_interactive_marker_layer()
+        removed_setting = self._clear_saved_interactive_marker_data()
+
+        canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
+        if canvas is not None and hasattr(canvas, "refresh"):
+            canvas.refresh()
+        if cleared or removed_setting:
+            self._logger.info("Interactive marker has been reset.")
+            return True
+        return False
+
     def _is_vector_layer(self, layer) -> bool:
         if layer is None or QgsMapLayerType is None:
             return False
@@ -552,6 +624,178 @@ class LayerToolboxService:
             self._logger.warning(f"Failed to create helper memory layer '{layer_name}'.")
             return None
         return layer
+
+    def _create_interactive_marker_layer(self, canvas):
+        if QgsVectorLayer is None:
+            self._logger.warning("Cannot create marker layer: QgsVectorLayer is unavailable.")
+            return None
+
+        crs_authid = ""
+        try:
+            map_settings = canvas.mapSettings() if canvas is not None and hasattr(canvas, "mapSettings") else None
+            destination_crs = (
+                map_settings.destinationCrs()
+                if map_settings is not None and hasattr(map_settings, "destinationCrs")
+                else None
+            )
+            if destination_crs is not None and hasattr(destination_crs, "authid"):
+                crs_authid = str(destination_crs.authid() or "").strip()
+        except Exception:
+            crs_authid = ""
+
+        uri = f"Point?crs={crs_authid}" if crs_authid else "Point"
+        layer = QgsVectorLayer(uri, self.INTERACTIVE_MARKER_LAYER_NAME, "memory")
+        if layer is None or not layer.isValid():
+            self._logger.warning("Failed to create interactive marker memory layer.")
+            return None
+
+        self._tag_helper_layer(layer, "", self.INTERACTIVE_MARKER_KIND)
+        return layer
+
+    def _clear_marker_features(self, layer) -> None:
+        if layer is None:
+            return
+        provider = layer.dataProvider() if hasattr(layer, "dataProvider") else None
+        if provider is None or not hasattr(provider, "deleteFeatures"):
+            return
+        try:
+            feature_ids = [feat.id() for feat in layer.getFeatures()] if hasattr(layer, "getFeatures") else []
+            if feature_ids:
+                provider.deleteFeatures(feature_ids)
+        except Exception:
+            return
+
+    def _apply_interactive_marker_style(self, layer, svg_path: str) -> None:
+        if layer is None:
+            return
+        if QgsMarkerSymbol is None or QgsSvgMarkerSymbolLayer is None:
+            return
+
+        try:
+            svg_layer = QgsSvgMarkerSymbolLayer.create(
+                {
+                    "name": str(svg_path or ""),
+                    "size": "8",
+                    "outline_width": "0",
+                }
+            )
+            if svg_layer is None:
+                return
+
+            symbol = QgsMarkerSymbol.createSimple({"name": "circle", "size": "2"})
+            if symbol is None or symbol.symbolLayerCount() == 0:
+                return
+
+            symbol.changeSymbolLayer(0, svg_layer)
+            renderer = layer.renderer() if hasattr(layer, "renderer") else None
+            if renderer is not None and hasattr(renderer, "setSymbol"):
+                renderer.setSymbol(symbol)
+        except Exception as exc:
+            self._logger.warning(f"Failed to apply SVG marker style: {exc}")
+
+    def _remove_interactive_marker_layer(self) -> bool:
+        marker_layer = self._find_helper_layer("", self.INTERACTIVE_MARKER_KIND)
+        if marker_layer is None or self._project is None:
+            return False
+        self._project.removeMapLayer(marker_layer.id())
+        return True
+
+    def _save_interactive_marker(self, point, canvas) -> None:
+        if self._settings_manager is None:
+            return
+        try:
+            save_point = self._transform_point_to_wgs84(point, canvas)
+            payload = {
+                "x": float(save_point.x()),
+                "y": float(save_point.y()),
+                "crs": "EPSG:4326",
+            }
+            self._settings_manager.set_json(self.INTERACTIVE_MARKER_SETTINGS_KEY, payload)
+        except Exception as exc:
+            self._logger.warning(f"Failed to persist interactive marker: {exc}")
+
+    def _load_saved_interactive_marker_data(self) -> dict[str, Any] | None:
+        if self._settings_manager is None:
+            return None
+        try:
+            raw = self._settings_manager.get_json(self.INTERACTIVE_MARKER_SETTINGS_KEY, None)
+        except Exception:
+            return None
+        if not isinstance(raw, dict):
+            return None
+        if "x" not in raw or "y" not in raw:
+            return None
+        return raw
+
+    def _clear_saved_interactive_marker_data(self) -> bool:
+        if self._settings_manager is None:
+            return False
+        marker_data = self._load_saved_interactive_marker_data()
+        if marker_data is None:
+            return False
+        try:
+            self._settings_manager.remove(self.INTERACTIVE_MARKER_SETTINGS_KEY)
+            return True
+        except Exception as exc:
+            self._logger.warning(f"Failed to clear persisted interactive marker: {exc}")
+            return False
+
+    def _point_from_saved_marker(self, marker_data: dict[str, Any], iface):
+        try:
+            point_wgs84 = QgsPointXY(float(marker_data.get("x")), float(marker_data.get("y")))
+        except Exception:
+            return None
+
+        canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
+        return self._transform_point_from_wgs84(point_wgs84, canvas)
+
+    def _transform_point_to_wgs84(self, point, canvas):
+        if (
+            QgsCoordinateReferenceSystem is None
+            or QgsCoordinateTransform is None
+            or self._project is None
+            or canvas is None
+            or not hasattr(canvas, "mapSettings")
+        ):
+            return point
+
+        try:
+            map_settings = canvas.mapSettings()
+            source_crs = map_settings.destinationCrs() if hasattr(map_settings, "destinationCrs") else None
+            target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            if source_crs is None or not hasattr(source_crs, "isValid") or not source_crs.isValid():
+                return point
+            if str(source_crs.authid()) == "EPSG:4326":
+                return point
+            transform = QgsCoordinateTransform(source_crs, target_crs, self._project)
+            transformed = transform.transform(point)
+            return QgsPointXY(transformed.x(), transformed.y())
+        except Exception:
+            return point
+
+    def _transform_point_from_wgs84(self, point, canvas):
+        if (
+            QgsCoordinateReferenceSystem is None
+            or QgsCoordinateTransform is None
+            or self._project is None
+            or canvas is None
+            or not hasattr(canvas, "mapSettings")
+        ):
+            return point
+
+        try:
+            map_settings = canvas.mapSettings()
+            target_crs = map_settings.destinationCrs() if hasattr(map_settings, "destinationCrs") else None
+            source_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            if target_crs is None or not hasattr(target_crs, "isValid") or not target_crs.isValid():
+                return point
+            if str(target_crs.authid()) == "EPSG:4326":
+                return point
+            transform = QgsCoordinateTransform(source_crs, target_crs, self._project)
+            transformed = transform.transform(point)
+            return QgsPointXY(transformed.x(), transformed.y())
+        except Exception:
+            return point
 
     def _tag_helper_layer(self, helper_layer, source_layer_id: str, kind: str) -> None:
         helper_layer.setCustomProperty(self.HELPER_SOURCE_PROPERTY, source_layer_id)
