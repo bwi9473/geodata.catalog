@@ -14,6 +14,7 @@ from geodata_catalog.services.layer_filter_service import (
 )
 
 try:
+    from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
     from qgis.PyQt.QtCore import QEvent, Qt
     from qgis.PyQt.QtWidgets import (
         QAbstractItemView,
@@ -39,6 +40,8 @@ try:
         QWidget,
     )
 except ImportError:  # pragma: no cover
+    QgsCoordinateTransformContext = None
+    QgsVectorFileWriter = None
     QEvent = None
     Qt = None
     QAbstractItemView = None
@@ -147,6 +150,12 @@ class LayerCustomViewWindow(QMainWindow):
     """Combined filter and custom-view window for a loaded QGIS layer."""
 
     _NUMERIC_VALUE_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
+    _FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+    _EXPORT_FORMAT_CSV = "csv"
+    _EXPORT_FORMAT_XLSX = "xlsx"
+    _EXPORT_FORMAT_GEOJSON = "geojson"
+    _EXPORT_FORMAT_KML = "kml"
+    _MAX_EXPORT_FILENAME_LENGTH = 140
 
     def __init__(
         self,
@@ -507,19 +516,24 @@ class LayerCustomViewWindow(QMainWindow):
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._on_apply_clicked)
 
-        export_csv_btn = QPushButton("Export CSV")
-        export_csv_btn.clicked.connect(self._on_export_csv)
+        self._export_format_combo = QComboBox()
+        self._export_format_combo.addItem("CSV", self._EXPORT_FORMAT_CSV)
+        self._export_format_combo.addItem("Excel", self._EXPORT_FORMAT_XLSX)
+        self._export_format_combo.addItem("GeoJSON", self._EXPORT_FORMAT_GEOJSON)
+        self._export_format_combo.addItem("KML", self._EXPORT_FORMAT_KML)
+        self._export_format_combo.setCurrentIndex(0)
+        self._export_format_combo.setToolTip("Choose export format for selected records")
 
-        export_excel_btn = QPushButton("Export Excel")
-        export_excel_btn.clicked.connect(self._on_export_excel)
+        export_btn = QPushButton("Export")
+        export_btn.clicked.connect(self._on_export_selected_records)
 
         controls.addWidget(self._sort_column_combo)
         controls.addWidget(self._sort_order_combo)
         controls.addWidget(self._page_size_spin)
         controls.addWidget(apply_btn)
         controls.addStretch(1)
-        controls.addWidget(export_csv_btn)
-        controls.addWidget(export_excel_btn)
+        controls.addWidget(self._export_format_combo)
+        controls.addWidget(export_btn)
         self._root.addLayout(controls)
 
         nav = QHBoxLayout()
@@ -1281,68 +1295,238 @@ class LayerCustomViewWindow(QMainWindow):
             if self._logger is not None:
                 self._logger.warning(f"Unable to select feature on map: {exc}")
 
-    def _on_export_csv(self) -> None:
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Custom View as CSV",
-            str(Path.home() / "custom_view.csv"),
-            "CSV Files (*.csv)",
-        )
-        if not file_path:
+    def _on_export_selected_records(self) -> None:
+        if self._layer is None:
+            QMessageBox.warning(self, "Export", "No active layer is available for export.")
             return
-        try:
-            self._write_csv(Path(file_path))
-            QMessageBox.information(self, "Export", f"CSV exported to:\n{file_path}")
-        except Exception as exc:
-            if self._logger is not None:
-                self._logger.error(f"CSV export failed: {exc}")
-            QMessageBox.warning(self, "Export", f"CSV export failed:\n{exc}")
 
-    def _on_export_excel(self) -> None:
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Custom View as Excel",
-            str(Path.home() / "custom_view.xlsx"),
-            "Excel Files (*.xlsx)",
-        )
-        if not file_path:
-            return
-        try:
-            self._write_xlsx(Path(file_path))
-            QMessageBox.information(self, "Export", f"Excel exported to:\n{file_path}")
-        except Exception as exc:
-            if self._logger is not None:
-                self._logger.error(f"Excel export failed: {exc}")
-            QMessageBox.warning(
+        export_fids = self._export_record_fids()
+        if not export_fids:
+            QMessageBox.information(
                 self,
                 "Export",
-                "Excel export failed. Install 'openpyxl' in QGIS Python environment, "
-                f"or use CSV export.\n\nDetails:\n{exc}",
+                "No records match the current filter criteria.",
             )
+            return
 
-    def _write_csv(self, file_path: Path) -> None:
+        export_format = str(
+            self._export_format_combo.currentData() if self._export_format_combo is not None else ""
+        ).strip().lower()
+        if export_format not in {
+            self._EXPORT_FORMAT_CSV,
+            self._EXPORT_FORMAT_XLSX,
+            self._EXPORT_FORMAT_GEOJSON,
+            self._EXPORT_FORMAT_KML,
+        }:
+            QMessageBox.warning(self, "Export", "Unsupported export format selected.")
+            return
+
+        file_path = self._choose_export_path(export_format)
+        if file_path is None:
+            return
+
+        try:
+            if export_format in {self._EXPORT_FORMAT_GEOJSON, self._EXPORT_FORMAT_KML}:
+                self._write_vector_export(file_path, export_format, export_fids)
+            else:
+                self._write_table_export(file_path, export_format, export_fids)
+            QMessageBox.information(
+                self,
+                "Export",
+                f"Exported {len(export_fids)} records to:\n{file_path}",
+            )
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(f"{export_format.upper()} export failed: {exc}")
+            QMessageBox.warning(self, "Export", f"{export_format.upper()} export failed:\n{exc}")
+
+    def _export_record_fids(self) -> list[int]:
+        return sorted(
+            int(record.get("__fid", -1))
+            for record in self._all_records
+            if int(record.get("__fid", -1)) >= 0
+        )
+
+    @classmethod
+    def _export_format_spec(cls, export_format: str) -> tuple[str, str, str]:
+        normalized = str(export_format or "").strip().lower()
+        if normalized == cls._EXPORT_FORMAT_CSV:
+            return "csv", "CSV Files (*.csv)", "CSV"
+        if normalized == cls._EXPORT_FORMAT_XLSX:
+            return "xlsx", "Excel Files (*.xlsx)", "XLSX"
+        if normalized == cls._EXPORT_FORMAT_KML:
+            return "kml", "KML Files (*.kml)", "KML"
+        return "geojson", "GeoJSON Files (*.geojson)", "GeoJSON"
+
+    @classmethod
+    def _ensure_export_extension(cls, file_path: Path, extension: str) -> Path:
+        ext = f".{str(extension or '').strip().lower().lstrip('.')}"
+        if file_path.suffix.lower() == ext:
+            return file_path
+        return file_path.with_suffix(ext)
+
+    def _choose_export_path(self, export_format: str) -> Path | None:
+        extension, file_filter, _driver_name = self._export_format_spec(export_format)
+        suggested_name = self._build_export_file_basename()
+        suggested = Path.home() / f"{suggested_name}.{extension}"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Selected Records",
+            str(suggested),
+            file_filter,
+        )
+        if not file_path:
+            return None
+        return self._ensure_export_extension(Path(file_path), extension)
+
+    def _build_export_file_basename(self) -> str:
+        layer_name = self._safe_filename_token(self._layer_display_name())
+        criteria_tokens = self._active_criteria_tokens()
+
+        if criteria_tokens:
+            base_name = "_".join([layer_name, *criteria_tokens])
+        else:
+            base_name = f"{layer_name}_all"
+
+        if len(base_name) <= self._MAX_EXPORT_FILENAME_LENGTH:
+            return base_name
+
+        return base_name[: self._MAX_EXPORT_FILENAME_LENGTH].rstrip("._-") or "export"
+
+    def _layer_display_name(self) -> str:
+        if self._layer is not None and hasattr(self._layer, "name"):
+            try:
+                value = str(self._layer.name() or "").strip()
+                if value:
+                    return value
+            except Exception:
+                pass
+        return "layer"
+
+    def _active_criteria_tokens(self) -> list[str]:
+        criteria: list[str] = []
+        layer_filter = self._current_filter()
+
+        for attr in layer_filter.attributes:
+            value_token = self._safe_filename_token(attr.value)
+            if value_token:
+                criteria.append(value_token)
+
+        fl = layer_filter.flight_level
+        if getattr(fl, "enabled", False):
+            criteria.append(f"fl-{int(fl.lower)}-{int(fl.upper)}")
+
+        return criteria
+
+    @classmethod
+    def _safe_filename_token(cls, raw_value: str) -> str:
+        normalized = cls._FILENAME_SAFE_RE.sub("_", str(raw_value or "").strip())
+        normalized = re.sub(r"_+", "_", normalized).strip("._-")
+        return normalized or "value"
+
+    def _write_vector_export(self, file_path: Path, export_format: str, selected_fids: list[int]) -> None:
+        if QgsVectorFileWriter is None:
+            raise RuntimeError("QGIS vector writer is not available in this runtime.")
+        if self._layer is None:
+            raise RuntimeError("No active layer is available for export.")
+
+        extension, _file_filter, driver_name = self._export_format_spec(export_format)
+        target_path = self._ensure_export_extension(file_path, extension)
+
+        if not hasattr(QgsVectorFileWriter, "SaveVectorOptions"):
+            raise RuntimeError("QGIS runtime is too old for selected-record export.")
+
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = driver_name
+        options.fileEncoding = "UTF-8"
+        options.onlySelectedFeatures = True
+        options.layerName = str(getattr(self._layer, "name", lambda: "selected_records")())
+
+        previous_selected_ids: list[int] = []
+        if hasattr(self._layer, "selectedFeatureIds"):
+            try:
+                previous_selected_ids = [int(fid) for fid in self._layer.selectedFeatureIds()]
+            except Exception:
+                previous_selected_ids = []
+
+        try:
+            self._layer.selectByIds(selected_fids)
+
+            transform_context = None
+            if hasattr(self._layer, "transformContext"):
+                try:
+                    transform_context = self._layer.transformContext()
+                except Exception:
+                    transform_context = None
+            if transform_context is None and QgsCoordinateTransformContext is not None:
+                transform_context = QgsCoordinateTransformContext()
+
+            writer_fn = getattr(QgsVectorFileWriter, "writeAsVectorFormatV3", None)
+            if callable(writer_fn):
+                result = writer_fn(self._layer, str(target_path), transform_context, options)
+                error_code = result[0] if isinstance(result, tuple) else result
+                if error_code != QgsVectorFileWriter.NoError:
+                    detail = ""
+                    if isinstance(result, tuple) and len(result) > 1:
+                        detail = str(result[1])
+                    raise RuntimeError(detail or "QGIS writer returned an unknown error.")
+                return
+
+            raise RuntimeError("QGIS runtime does not support vector export API V3.")
+        finally:
+            try:
+                self._layer.selectByIds(previous_selected_ids)
+            except Exception:
+                pass
+
+    def _write_table_export(self, file_path: Path, export_format: str, selected_fids: list[int]) -> None:
+        extension, _file_filter, _label = self._export_format_spec(export_format)
+        target_path = self._ensure_export_extension(file_path, extension)
+        selected_records = self._records_for_fids(selected_fids)
+
+        if export_format == self._EXPORT_FORMAT_CSV:
+            self._write_csv(target_path, selected_records)
+            return
+
+        if export_format == self._EXPORT_FORMAT_XLSX:
+            self._write_xlsx(target_path, selected_records)
+            return
+
+        raise RuntimeError("Unsupported table export format.")
+
+    def _records_for_fids(self, selected_fids: list[int]) -> list[dict[str, object]]:
+        selected_set = set(selected_fids)
+        return [
+            record
+            for record in self._all_records
+            if int(record.get("__fid", -1)) in selected_set
+        ]
+
+    def _write_csv(self, file_path: Path, records: list[dict[str, object]]) -> None:
         headers = [col.get("label", col["name"]) for col in self._columns]
         keys = [col["name"] for col in self._columns]
         with file_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(headers)
-            for record in self._all_records:
+            for record in records:
                 writer.writerow([record.get(key, "") for key in keys])
 
-    def _write_xlsx(self, file_path: Path) -> None:
+    def _write_xlsx(self, file_path: Path, records: list[dict[str, object]]) -> None:
         try:
             from openpyxl import Workbook
         except ImportError as exc:
-            raise RuntimeError("openpyxl is not installed") from exc
+            raise RuntimeError(
+                "openpyxl is not installed in the QGIS Python environment."
+            ) from exc
 
         wb = Workbook()
         ws = wb.active
-        ws.title = "Custom View"
+        ws.title = "Selected Records"
 
         headers = [col.get("label", col["name"]) for col in self._columns]
         keys = [col["name"] for col in self._columns]
         ws.append(headers)
-        for record in self._all_records:
+        for record in records:
             ws.append([record.get(key, "") for key in keys])
 
         wb.save(str(file_path))

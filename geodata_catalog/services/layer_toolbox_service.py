@@ -71,6 +71,7 @@ class LayerToolboxService:
     BASEMAP_DEFAULT = "World Map"
     BASEMAP_SETTINGS_KEY = "layer_toolbox/selected_basemap"
     MUAC_EXTENT_WGS84 = (2.0, 49.0, 9.5, 53.8)
+    GROUPING_RULE_OPACITY = 0.6
 
     BASEMAPS: tuple[dict[str, str], ...] = (
         {
@@ -476,6 +477,8 @@ class LayerToolboxService:
             symbol_color = self._color_for_group_key(f"{lower}-{upper}")
             if symbol_color is not None:
                 symbol.setColor(symbol_color)
+            if hasattr(symbol, "setOpacity"):
+                symbol.setOpacity(self.GROUPING_RULE_OPACITY)
 
             rule = QgsRuleBasedRenderer.Rule(symbol)
             rule.setLabel(self._format_fl_range_label(lower, upper))
@@ -485,10 +488,95 @@ class LayerToolboxService:
             root_rule.appendChild(rule)
 
         layer.setRenderer(renderer)
+        if hasattr(layer, "setOpacity"):
+            try:
+                layer.setOpacity(self.GROUPING_RULE_OPACITY)
+            except Exception as exc:
+                self._logger.warning(f"Could not set grouping layer opacity: {exc}")
         if hasattr(layer, "triggerRepaint"):
             layer.triggerRepaint()
         self._logger.info(
             f"Applied FL range rules on '{layer.name()}' with {len(ranges)} distinct range(s)."
+        )
+        return True
+
+    def apply_value_grouping_rules(self, layer, group_field: str) -> bool:
+        """Apply a rule-based renderer with one rule per distinct value of *group_field*."""
+        if not self._is_vector_layer(layer):
+            self._logger.warning("Cannot apply grouping rules: selected layer is not vector-based.")
+            return False
+        if QgsRuleBasedRenderer is None or QgsSymbol is None:
+            self._logger.warning("Cannot apply grouping rules: QGIS renderer classes are unavailable.")
+            return False
+
+        resolved_field = self._resolve_layer_field_name(layer, group_field)
+        if not resolved_field:
+            self._logger.warning("Cannot apply grouping rules: field is missing on selected layer.")
+            return False
+
+        # Collect distinct values, preserving first-seen insertion order.
+        seen: dict[str, None] = {}
+        try:
+            for feature in layer.getFeatures():
+                try:
+                    raw = feature[resolved_field]
+                except Exception:
+                    continue
+                key = "" if raw is None else str(raw).strip()
+                seen[key] = None
+        except Exception as exc:
+            self._logger.warning(f"Cannot apply grouping rules: failed to iterate features: {exc}")
+            return False
+
+        distinct_values = list(seen.keys())
+        if not distinct_values:
+            self._logger.warning("Cannot apply grouping rules: no values found in field.")
+            return False
+
+        base_symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if base_symbol is None:
+            self._logger.warning("Cannot apply grouping rules: failed to create base symbol.")
+            return False
+
+        renderer = QgsRuleBasedRenderer(base_symbol)
+        root_rule = renderer.rootRule()
+        try:
+            for child in list(root_rule.children()):
+                root_rule.removeChild(child)
+        except Exception:
+            pass
+
+        for value in distinct_values:
+            symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+            if symbol is None:
+                continue
+            symbol_color = self._color_for_group_key(value)
+            if symbol_color is not None:
+                symbol.setColor(symbol_color)
+            if hasattr(symbol, "setOpacity"):
+                symbol.setOpacity(self.GROUPING_RULE_OPACITY)
+
+            rule = QgsRuleBasedRenderer.Rule(symbol)
+            rule.setLabel(value if value else "(empty)")
+            escaped_field = str(resolved_field).replace('"', '""')
+            if value == "":
+                rule.setFilterExpression(f'"{escaped_field}" IS NULL OR "{escaped_field}" = \'\'')
+            else:
+                escaped_value = value.replace("'", "''")
+                rule.setFilterExpression(f'"{escaped_field}" = \'{escaped_value}\'')
+            root_rule.appendChild(rule)
+
+        layer.setRenderer(renderer)
+        if hasattr(layer, "setOpacity"):
+            try:
+                layer.setOpacity(self.GROUPING_RULE_OPACITY)
+            except Exception as exc:
+                self._logger.warning(f"Could not set grouping layer opacity: {exc}")
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
+        self._logger.info(
+            f"Applied value grouping rules on '{layer.name()}' field '{resolved_field}' "
+            f"with {len(distinct_values)} distinct value(s)."
         )
         return True
 

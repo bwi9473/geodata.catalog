@@ -193,6 +193,7 @@ class GeoDataCatalogPlugin:
                 toolbox_service=self._layer_toolbox_service,
                 logger=self._logger,
                 iface=self.iface,
+                layer_config_repository=self._layer_config_repository,
             )
             self.iface.addDockWidget(self._dock_area(), self._layer_toolbox_dock)
             self._try_tabify_with_core_docks(self._layer_toolbox_dock)

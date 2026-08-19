@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from geodata_catalog.logging_utils import PluginLogger
+from geodata_catalog.metadata.layer_config_repository import LayerConfigRepository
 from geodata_catalog.services.layer_toolbox_service import LayerToolboxService
 
 try:
@@ -60,6 +61,7 @@ class LayerToolboxDock(QDockWidget):
         toolbox_service: LayerToolboxService,
         logger: PluginLogger,
         iface=None,
+        layer_config_repository: LayerConfigRepository | None = None,
     ) -> None:
         if QDockWidget is object:  # pragma: no cover
             raise RuntimeError("QGIS runtime is not available.")
@@ -68,6 +70,7 @@ class LayerToolboxDock(QDockWidget):
         self._toolbox_service = toolbox_service
         self._logger = logger
         self._iface = iface
+        self._layer_config_repository = layer_config_repository
         self._updating_ui = False
 
         self._layer_combo = None
@@ -88,6 +91,7 @@ class LayerToolboxDock(QDockWidget):
         self._previous_map_tool = None
         self._fl_lower_field_combo = None
         self._fl_upper_field_combo = None
+        self._fl_upper_label = None
         self._apply_fl_rules_btn = None
 
         self._build_ui()
@@ -190,15 +194,17 @@ class LayerToolboxDock(QDockWidget):
         point_form.addRow("Order by", self._order_field_combo)
         root.addWidget(point_group)
 
-        fl_group = QGroupBox("Flight level tools")
+        fl_group = QGroupBox("Grouping rules")
         fl_form = QFormLayout(fl_group)
 
         self._fl_lower_field_combo = QComboBox()
+        self._fl_lower_field_combo.currentIndexChanged.connect(self._on_grouping_field_changed)
         self._fl_upper_field_combo = QComboBox()
-        fl_form.addRow("Lower", self._fl_lower_field_combo)
-        fl_form.addRow("Upper", self._fl_upper_field_combo)
+        self._fl_upper_label = QLabel("Upper")
+        fl_form.addRow("Group by", self._fl_lower_field_combo)
+        fl_form.addRow(self._fl_upper_label, self._fl_upper_field_combo)
 
-        self._apply_fl_rules_btn = QPushButton("Apply FL range rules")
+        self._apply_fl_rules_btn = QPushButton("Apply grouping rules")
         self._apply_fl_rules_btn.clicked.connect(self._on_apply_fl_rules_clicked)
         fl_form.addRow(self._apply_fl_rules_btn)
 
@@ -349,23 +355,79 @@ class LayerToolboxDock(QDockWidget):
         self._fl_upper_field_combo.clear()
         self._group_field_combo.addItem("(none)", "")
         self._order_field_combo.addItem("(none)", "")
-        self._fl_lower_field_combo.addItem("fl_lower", "fl_lower")
-        self._fl_upper_field_combo.addItem("fl_upper", "fl_upper")
 
         if layer is None or not hasattr(layer, "fields"):
+            self._select_preferred_fl_field(self._fl_lower_field_combo, "fl_lower")
+            self._select_preferred_fl_field(self._fl_upper_field_combo, "fl_upper")
             return
+
         try:
             field_names = [str(name) for name in layer.fields().names()]
         except Exception:
             field_names = []
+
         for field_name in field_names:
             self._group_field_combo.addItem(field_name, field_name)
             self._order_field_combo.addItem(field_name, field_name)
-            self._fl_lower_field_combo.addItem(field_name, field_name)
-            self._fl_upper_field_combo.addItem(field_name, field_name)
+
+        # Determine which columns to show in the FL field combos.
+        # When a LayerConfig is available, use only the searchable_columns as options.
+        # The fl_lower and fl_upper fields are added separately only when enable_fl_filter=True.
+        layer_config = self._resolve_layer_config(layer)
+        if layer_config is not None:
+            self._populate_fl_combos_from_config(layer_config, field_names)
+        else:
+            # Fallback: show all layer fields (no config available)
+            for field_name in field_names:
+                self._fl_lower_field_combo.addItem(field_name, field_name)
+                self._fl_upper_field_combo.addItem(field_name, field_name)
 
         self._select_preferred_fl_field(self._fl_lower_field_combo, "fl_lower")
         self._select_preferred_fl_field(self._fl_upper_field_combo, "fl_upper")
+
+    def _resolve_layer_config(self, layer):
+        """Return the LayerConfig for the given QGIS layer, or None if unavailable."""
+        if self._layer_config_repository is None or layer is None:
+            return None
+        if not hasattr(layer, "customProperty"):
+            return None
+        try:
+            datasource_id = str(layer.customProperty("geodata_catalog/datasource_id") or "").strip()
+            source_layer_name = str(layer.customProperty("geodata_catalog/source_layer_name") or "").strip()
+        except Exception:
+            return None
+        if not datasource_id or not source_layer_name:
+            return None
+        try:
+            return self._layer_config_repository.get(datasource_id, source_layer_name)
+        except Exception:
+            return None
+
+    def _populate_fl_combos_from_config(self, layer_config, available_field_names: list[str]) -> None:
+        """Fill FL combos with searchable_columns; add fl fields only when FL filter is enabled."""
+        available_set = {name.casefold() for name in available_field_names}
+        fl_field_names = {"fl_lower", "fl_upper"}
+
+        # Add searchable columns that actually exist on the layer
+        for col_def in (layer_config.searchable_columns or []):
+            col_name = str(col_def.get("name", "")).strip()
+            if not col_name:
+                continue
+            # Skip fl_lower / fl_upper here; they are handled separately below
+            if col_name.casefold() in fl_field_names:
+                continue
+            if col_name.casefold() not in available_set:
+                continue
+            col_label = str(col_def.get("label", "")).strip() or col_name
+            self._fl_lower_field_combo.addItem(col_label, col_name)
+            self._fl_upper_field_combo.addItem(col_label, col_name)
+
+        # Add fl_lower and fl_upper only when the layer has flight level filtering enabled
+        if layer_config.enable_fl_filter:
+            for fl_name in ("fl_lower", "fl_upper"):
+                if fl_name.casefold() in available_set:
+                    self._fl_lower_field_combo.addItem(fl_name, fl_name)
+                    self._fl_upper_field_combo.addItem(fl_name, fl_name)
 
     def _sync_toggle_states(self) -> None:
         layer = self._selected_layer()
@@ -392,6 +454,31 @@ class LayerToolboxDock(QDockWidget):
         self._fl_lower_field_combo.setEnabled(has_layer)
         self._fl_upper_field_combo.setEnabled(has_layer)
         self._apply_fl_rules_btn.setEnabled(has_layer)
+
+        # Show the Upper combo only when the layer has FL filter enabled.
+        layer_config = self._resolve_layer_config(layer) if has_layer else None
+        fl_enabled = layer_config is not None and bool(layer_config.enable_fl_filter)
+        self._fl_upper_field_combo.setVisible(fl_enabled)
+        if self._fl_upper_label is not None:
+            self._fl_upper_label.setVisible(fl_enabled)
+
+        # Sync the enabled state of the Upper combo based on the current Group-by selection.
+        self._sync_upper_combo_enabled()
+
+    def _sync_upper_combo_enabled(self) -> None:
+        """Enable the Upper combo only when fl_lower is selected as the group field."""
+        if self._fl_upper_field_combo is None or not self._fl_upper_field_combo.isVisible():
+            return
+        selected = str(self._fl_lower_field_combo.currentData() or "").casefold()
+        upper_active = selected == "fl_lower"
+        self._fl_upper_field_combo.setEnabled(upper_active)
+        if self._fl_upper_label is not None:
+            self._fl_upper_label.setEnabled(upper_active)
+
+    def _on_grouping_field_changed(self, _index: int) -> None:
+        if self._updating_ui:
+            return
+        self._sync_upper_combo_enabled()
 
     def _on_polygon_vertices_toggled(self, checked: bool) -> None:
         if self._updating_ui:
@@ -526,13 +613,28 @@ class LayerToolboxDock(QDockWidget):
         layer = self._selected_layer()
         if layer is None:
             return
-        lower_field = str(self._fl_lower_field_combo.currentData() or "fl_lower")
-        upper_field = str(self._fl_upper_field_combo.currentData() or "fl_upper")
-        self._toolbox_service.apply_flight_level_range_rules(
-            layer,
-            lower_field=lower_field,
-            upper_field=upper_field,
+
+        group_field = str(self._fl_lower_field_combo.currentData() or "")
+        if not group_field:
+            return
+
+        # Use FL range mode only when the upper combo is visible AND the user
+        # explicitly selected fl_lower as the group field (numeric FL bounds).
+        use_fl_mode = (
+            self._fl_upper_field_combo is not None
+            and self._fl_upper_field_combo.isVisible()
+            and group_field.casefold() == "fl_lower"
         )
+
+        if use_fl_mode:
+            upper_field = str(self._fl_upper_field_combo.currentData() or "fl_upper")
+            self._toolbox_service.apply_flight_level_range_rules(
+                layer,
+                lower_field=group_field,
+                upper_field=upper_field,
+            )
+        else:
+            self._toolbox_service.apply_value_grouping_rules(layer, group_field=group_field)
 
     def _select_preferred_fl_field(self, combo, preferred_name: str) -> None:
         idx = combo.findData(preferred_name)
