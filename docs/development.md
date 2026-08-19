@@ -20,7 +20,6 @@ pip install -r requirements-dev.txt
 pytest>=8.0.0
 requests>=2.32.0
 python-oracledb>=2.2.0
-psycopg[binary]>=3.2.0
 ```
 
 ### Run all tests
@@ -121,7 +120,6 @@ The steps below walk through a concrete example: adding a **GeoPackage** connect
 ```python
 class DatasourceType(str, Enum):
     ORACLE = "oracle"
-    POSTGIS = "postgis"
     GEOJSON = "geojson"
     KML = "kml"
     REST = "rest"
@@ -236,7 +234,6 @@ from geodata_catalog.connectors.geopackage_connector import GeoPackageConnector 
 # Inside get_connector():
 connector_map: dict[DatasourceType, type[BaseConnector]] = {
     DatasourceType.ORACLE:      OracleConnector,
-    DatasourceType.POSTGIS:     PostgisConnector,
     DatasourceType.GEOJSON:     GeoJsonConnector,
     DatasourceType.KML:         KmlConnector,
     DatasourceType.REST:        RestConnector,
@@ -259,7 +256,6 @@ __all__ = [
     "GeoPackageConnector",    # ← add
     "KmlConnector",
     "OracleConnector",
-    "PostgisConnector",
     "RestConnector",
 ]
 ```

@@ -7,7 +7,6 @@ from typing import Any
 
 class DatasourceType(str, Enum):
     ORACLE = "oracle"
-    POSTGIS = "postgis"
     GEOJSON = "geojson"
     KML = "kml"
     REST = "rest"

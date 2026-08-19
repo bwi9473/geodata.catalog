@@ -93,12 +93,18 @@ class LayerConfigDialog(QDialog):
             "Name shown in QGIS Layers panel (leave empty to use default source name)"
         )
         self._layername_edit.setClearButtonEnabled(True)
+        self._category_label_edit = QLineEdit()
+        self._category_label_edit.setPlaceholderText(
+            "Category shown in catalog (leave empty to use Miscellaneous)"
+        )
+        self._category_label_edit.setClearButtonEnabled(True)
         self._label_edit = QLineEdit()
         self._label_edit.setPlaceholderText("e.g. ROUTE_NAME  (leave empty to disable)")
         self._label_edit.setClearButtonEnabled(True)
         self._enable_fl_filter_check = QCheckBox("Enable Flight Level Filter")
         self._enable_fl_filter_check.setChecked(True)
         label_form.addRow("Layer name", self._layername_edit)
+        label_form.addRow("Category", self._category_label_edit)
         label_form.addRow("Field name", self._label_edit)
         label_form.addRow("", self._enable_fl_filter_check)
         layout.addWidget(label_group)
@@ -207,6 +213,7 @@ class LayerConfigDialog(QDialog):
     def get_config(self) -> LayerConfig:
         """Return the dialog state as a new :class:`LayerConfig`."""
         layername = self._layername_edit.text().strip() or None
+        category_label = self._category_label_edit.text().strip() or None
         label_col = self._label_edit.text().strip() or None
 
         searchable_columns: list[dict[str, str | bool]] = []
@@ -263,6 +270,7 @@ class LayerConfigDialog(QDialog):
             datasource_id=self._datasource_id,
             layer_name=self._layer_name,
             layername=layername,
+            category_label=category_label,
             label_column=label_col,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
             searchable_columns=searchable_columns,
@@ -275,6 +283,7 @@ class LayerConfigDialog(QDialog):
 
     def _populate(self, config: LayerConfig) -> None:
         self._layername_edit.setText(config.layername or "")
+        self._category_label_edit.setText(config.category_label or "")
         self._label_edit.setText(config.label_column or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
         self._search_table.setRowCount(0)

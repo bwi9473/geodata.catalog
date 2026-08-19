@@ -13,6 +13,7 @@ class LayerConfig:
     datasource_id: str
     layer_name: str
     layername: str | None = None
+    category_label: str | None = None
     label_column: str | None = None
     enable_fl_filter: bool = True
     searchable_columns: list[dict[str, str | bool]] = field(default_factory=list)
@@ -26,6 +27,7 @@ class LayerConfig:
             "datasource_id": self.datasource_id,
             "layer_name": self.layer_name,
             "layername": self.layername,
+            "category_label": self.category_label,
             "label_column": self.label_column,
             "enable_fl_filter": self.enable_fl_filter,
             "searchable_columns": self.searchable_columns,
@@ -38,6 +40,7 @@ class LayerConfig:
             datasource_id=data["datasource_id"],
             layer_name=data["layer_name"],
             layername=data.get("layername"),
+            category_label=data.get("category_label"),
             label_column=data.get("label_column"),
             enable_fl_filter=bool(data.get("enable_fl_filter", True)),
             searchable_columns=data.get("searchable_columns", []),

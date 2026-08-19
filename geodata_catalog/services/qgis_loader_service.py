@@ -84,6 +84,7 @@ class QgisLoaderService:
         self._apply_filter(layer, layer_definition.filter_expression)
         self._apply_labels(layer, layer_definition.label_column)
         self._style_service.apply_default_style(layer, layer_definition.default_style_file)
+        self._tag_layer_source(layer, layer_definition)
 
         if self._project is None:  # pragma: no cover
             raise LayerLoadException("QGIS project instance is not available.")
@@ -121,4 +122,16 @@ class QgisLoaderService:
         labeling = QgsVectorLayerSimpleLabeling(settings)
         layer.setLabeling(labeling)
         layer.setLabelsEnabled(True)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
         self._logger.info(f"Applied label column '{label_column}' to layer '{layer.name()}'")
+
+    def _tag_layer_source(self, layer, layer_definition) -> None:
+        """Store source identifiers as custom properties so the toolbox can look up layer config."""
+        if not hasattr(layer, "setCustomProperty"):
+            return
+        try:
+            layer.setCustomProperty("geodata_catalog/datasource_id", layer_definition.datasource_id)
+            layer.setCustomProperty("geodata_catalog/source_layer_name", layer_definition.layer_name)
+        except Exception as exc:
+            self._logger.warning(f"Could not tag layer source properties: {exc}")

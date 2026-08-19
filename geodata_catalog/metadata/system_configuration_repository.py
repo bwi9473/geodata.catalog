@@ -10,6 +10,17 @@ DEFAULT_FLIGHT_LEVEL_PRESETS: list[dict[str, int | str]] = [
     {"name": "HIGH", "lower": 355, "upper": 999},
 ]
 
+DEFAULT_UI_COLORS: dict[str, str] = {
+    "primary": "#59A947",
+    "primary_text": "#FFFFFF",
+    "panel_background": "#F7F9FC",
+    "window_background": "#FFFFFF",
+    "text": "#1E293B",
+    "border": "#D7DEE8",
+    "header_background": "#EEF3FA",
+    "header_text": "#0F172A",
+}
+
 
 class SystemConfigurationRepository:
     """Persistence for system-level plugin configuration values."""
@@ -29,6 +40,10 @@ class SystemConfigurationRepository:
     def load_flight_level_presets(self) -> list[dict[str, int | str]]:
         payload = self.load()
         return payload["flight_level_presets"]
+
+    def load_ui_colors(self) -> dict[str, str]:
+        payload = self.load()
+        return payload["ui_colors"]
 
     def save(self, payload: dict[str, Any]) -> None:
         file_path = self._file_path()
@@ -62,7 +77,10 @@ class SystemConfigurationRepository:
 
     @staticmethod
     def _default_payload() -> dict[str, Any]:
-        return {"flight_level_presets": deepcopy(DEFAULT_FLIGHT_LEVEL_PRESETS)}
+        return {
+            "flight_level_presets": deepcopy(DEFAULT_FLIGHT_LEVEL_PRESETS),
+            "ui_colors": deepcopy(DEFAULT_UI_COLORS),
+        }
 
     @classmethod
     def _normalize_payload(cls, payload: Any) -> dict[str, Any]:
@@ -70,6 +88,7 @@ class SystemConfigurationRepository:
         normalized["flight_level_presets"] = cls._normalize_presets(
             normalized.get("flight_level_presets")
         )
+        normalized["ui_colors"] = cls._normalize_ui_colors(normalized.get("ui_colors"))
         return normalized
 
     @staticmethod
@@ -98,3 +117,20 @@ class SystemConfigurationRepository:
             normalized.append({"name": name, "lower": lower, "upper": upper})
 
         return normalized or deepcopy(DEFAULT_FLIGHT_LEVEL_PRESETS)
+
+    @staticmethod
+    def _normalize_ui_colors(raw_colors: Any) -> dict[str, str]:
+        if not isinstance(raw_colors, dict):
+            return deepcopy(DEFAULT_UI_COLORS)
+
+        normalized = deepcopy(DEFAULT_UI_COLORS)
+        for key in DEFAULT_UI_COLORS:
+            value = raw_colors.get(key)
+            if not isinstance(value, str):
+                continue
+            candidate = value.strip()
+            if len(candidate) == 7 and candidate.startswith("#"):
+                hex_part = candidate[1:]
+                if all(ch in "0123456789abcdefABCDEF" for ch in hex_part):
+                    normalized[key] = candidate
+        return normalized

@@ -53,10 +53,10 @@ The `ERROR` line contains the full reason and is the starting point for diagnosi
 - Open the file in a text editor and check the top-level `"type"` field is `"FeatureCollection"` or `"Feature"`.
 - If using a **directory** path, check that at least one `.geojson` or `.json` file is present.
 
-### Oracle / PostGIS source
+### Oracle source
 
 - Verify the connection parameters (host, port, credentials).
-- Check that the database user has `SELECT` permission on `ALL_SDO_GEOM_METADATA` (Oracle) or `geometry_columns` (PostGIS).
+- Check that the database user has `SELECT` permission on `ALL_SDO_GEOM_METADATA`.
 - No rows in the metadata view means no spatial layers are registered — the database might be empty or the schema filter is too restrictive.
 
 ### REST source
@@ -84,7 +84,6 @@ Open the log and look for an `ERROR` line after clicking **Load Layer**. The err
 | `Failed to create layer ... QGIS runtime is not available` | Running outside QGIS | This should not happen in normal use; ensure the plugin is run from within QGIS |
 | `QGIS project instance is not available` | Plugin initialisation problem | Restart QGIS and re-activate the plugin |
 | `Failed to connect to Oracle datasource` | Network or credentials issue | Test with SQL*Plus or another Oracle client |
-| `psycopg is not installed` | psycopg package missing | Run `pip install "psycopg[binary]>=3.2.0"` in the QGIS Python environment |
 | `python-oracledb is not installed` | oracledb package missing | Run `pip install python-oracledb>=2.2.0` in the QGIS Python environment |
 | `requests package is not installed` | requests package missing | Run `pip install requests>=2.32.0` in the QGIS Python environment |
 | `Excel export failed. Install 'openpyxl'...` | `openpyxl` package missing for `.xlsx` export | Run `pip install openpyxl` in the QGIS Python environment, or export as CSV |

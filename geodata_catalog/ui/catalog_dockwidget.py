@@ -23,6 +23,39 @@ USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
 _CUSTOM_CTX = getattr(Qt, "CustomContextMenu", None) or Qt.ContextMenuPolicy.CustomContextMenu
 
 
+def _resolve_no_item_flags():
+    no_item_flags = getattr(Qt, "NoItemFlags", None)
+    if no_item_flags is not None:
+        return no_item_flags
+
+    item_flag_enum = getattr(Qt, "ItemFlag", None)
+    if item_flag_enum is not None:
+        no_item_flags = getattr(item_flag_enum, "NoItemFlags", None)
+        if no_item_flags is not None:
+            return no_item_flags
+
+    item_flags_type = getattr(Qt, "ItemFlags", None)
+    if callable(item_flags_type):
+        try:
+            return item_flags_type()
+        except Exception:
+            return None
+
+    return None
+
+
+_NO_ITEM_FLAGS = _resolve_no_item_flags()
+
+
+def _display_category_label(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return "Miscellaneous"
+    if value.casefold() == "file sources":
+        return "Uncategorized"
+    return value
+
+
 class CatalogDockWidget(QDockWidget):
     """Main catalog browser dock widget."""
 
@@ -88,9 +121,7 @@ class CatalogDockWidget(QDockWidget):
 
         database_root = QTreeWidgetItem(["Database Sources"])
         oracle_root = QTreeWidgetItem(["Oracle"])
-        postgis_root = QTreeWidgetItem(["PostGIS"])
         database_root.addChild(oracle_root)
-        database_root.addChild(postgis_root)
 
         rest_root = QTreeWidgetItem(["REST Sources"])
         file_root = QTreeWidgetItem(["File Sources"])
@@ -110,8 +141,6 @@ class CatalogDockWidget(QDockWidget):
 
             if datasource.datasource_type is DatasourceType.ORACLE:
                 oracle_root.addChild(item)
-            elif datasource.datasource_type is DatasourceType.POSTGIS:
-                postgis_root.addChild(item)
             elif datasource.datasource_type is DatasourceType.REST:
                 rest_root.addChild(item)
             elif datasource.datasource_type is DatasourceType.GEOJSON:
@@ -125,41 +154,105 @@ class CatalogDockWidget(QDockWidget):
         if self._all_layers_mode:
             return
         self.layers_list.clear()
+        grouped_layers: dict[str, list[LayerDefinition]] = {}
         for layer in layers:
-            item = QListWidgetItem(f"[{layer.business_group}] {layer.display_name}")
-            item.setData(USER_ROLE, (datasource_id, layer.layer_name))
-            item.setToolTip(
-                f"{layer.display_name}\nGeometry: {layer.geometry_type or 'Unknown'}\n"
-                f"CRS: {layer.default_crs or 'Not set'}\n"
-                f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
-            )
-            self.layers_list.addItem(item)
+            category = _display_category_label(layer.business_group or "")
+            grouped_layers.setdefault(category, []).append(layer)
+
+        for category in sorted(grouped_layers.keys(), key=str.casefold):
+            header_item = QListWidgetItem(f"Category: {category}")
+            header_font = header_item.font()
+            header_font.setBold(True)
+            header_item.setFont(header_font)
+            if _NO_ITEM_FLAGS is not None:
+                header_item.setFlags(_NO_ITEM_FLAGS)
+            self.layers_list.addItem(header_item)
+            for layer in sorted(grouped_layers[category], key=lambda l: l.display_name.casefold()):
+                item = QListWidgetItem(f"  {layer.display_name}")
+                item.setData(USER_ROLE, (datasource_id, layer.layer_name))
+                item.setToolTip(
+                    f"Category: {category}\n"
+                    f"{layer.display_name}\nGeometry: {layer.geometry_type or 'Unknown'}\n"
+                    f"CRS: {layer.default_crs or 'Not set'}\n"
+                    f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
+                )
+                self.layers_list.addItem(item)
 
     def set_all_layers(self, rows: list[dict[str, str | LayerDefinition]]) -> None:
         """Render one combined list with loadable layers from all datasources."""
         self.layers_list.clear()
+        unavailable_header_added = False
+        grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
         for row in rows:
             datasource_id = str(row.get("datasource_id", ""))
             source_name = str(row.get("source_name", ""))
             source_type = str(row.get("source_type", ""))
+            loadable = bool(row.get("loadable", True))
+            availability_reason = str(row.get("availability_reason", "")).strip()
             layer = row.get("layer")
             if not datasource_id or layer is None:
                 continue
             if not isinstance(layer, LayerDefinition):
                 continue
 
-            item = QListWidgetItem(
-                f"[{source_name}] [{layer.business_group}] {layer.display_name}"
+            if not loadable and availability_reason and not unavailable_header_added:
+                header_item = QListWidgetItem("Database not available")
+                header_item.setToolTip(
+                    "These layers are visible from configuration, but cannot be loaded right now."
+                )
+                header_font = header_item.font()
+                header_font.setBold(True)
+                header_item.setFont(header_font)
+                if _NO_ITEM_FLAGS is not None:
+                    header_item.setFlags(_NO_ITEM_FLAGS)
+                self.layers_list.addItem(header_item)
+                unavailable_header_added = True
+
+            display_group = str(row.get("business_group", layer.business_group)).strip()
+            category = _display_category_label(display_group)
+            grouped_rows.setdefault(category, []).append(row)
+
+        for category in sorted(grouped_rows.keys(), key=str.casefold):
+            header_item = QListWidgetItem(f"Category: {category}")
+            header_font = header_item.font()
+            header_font.setBold(True)
+            header_item.setFont(header_font)
+            if _NO_ITEM_FLAGS is not None:
+                header_item.setFlags(_NO_ITEM_FLAGS)
+            self.layers_list.addItem(header_item)
+
+            category_rows = sorted(
+                grouped_rows[category],
+                key=lambda r: (
+                    str(r.get("source_name", "")).casefold(),
+                    str((r.get("layer") or LayerDefinition("", "", "", "", "")).display_name).casefold(),
+                ),
             )
-            item.setData(USER_ROLE, (datasource_id, layer.layer_name))
-            item.setToolTip(
-                f"Source: {source_name} ({source_type})\n"
-                f"Layer: {layer.display_name}\n"
-                f"Geometry: {layer.geometry_type or 'Unknown'}\n"
-                f"CRS: {layer.default_crs or 'Not set'}\n"
-                f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
-            )
-            self.layers_list.addItem(item)
+            for row in category_rows:
+                datasource_id = str(row.get("datasource_id", ""))
+                source_name = str(row.get("source_name", ""))
+                source_type = str(row.get("source_type", ""))
+                loadable = bool(row.get("loadable", True))
+                availability_reason = str(row.get("availability_reason", "")).strip()
+                layer = row.get("layer")
+                if not datasource_id or layer is None or not isinstance(layer, LayerDefinition):
+                    continue
+
+                display_name = layer.display_name if loadable else f"{layer.display_name} (unavailable)"
+                item = QListWidgetItem(f"  [{source_name}] {display_name}")
+                item.setData(USER_ROLE, (datasource_id, layer.layer_name, loadable))
+                item.setToolTip(
+                    f"Category: {category}\n"
+                    f"Source: {source_name} ({source_type})\n"
+                    f"Layer: {layer.display_name}\n"
+                    f"Geometry: {layer.geometry_type or 'Unknown'}\n"
+                    f"CRS: {layer.default_crs or 'Not set'}\n"
+                    f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}\n"
+                    f"Loadable: {'Yes' if loadable else 'No'}"
+                )
+                if not loadable and availability_reason:
+                    item.setToolTip(f"{item.toolTip()}\nReason: {availability_reason}")
+                self.layers_list.addItem(item)
 
     def is_show_all_layers_enabled(self) -> bool:
         return self._all_layers_mode
@@ -200,20 +293,37 @@ class CatalogDockWidget(QDockWidget):
         item = self.layers_list.currentItem()
         if item is None:
             return
-        datasource_id, layer_name = item.data(USER_ROLE)
+        payload = item.data(USER_ROLE)
+        if not payload or len(payload) < 2:
+            return
+        datasource_id, layer_name = payload[0], payload[1]
+        loadable = True if len(payload) < 3 else bool(payload[2])
+        if not loadable:
+            return
         self.load_layer_requested.emit(datasource_id, layer_name)
 
     def _on_layer_double_clicked(self, item: QListWidgetItem) -> None:
-        datasource_id, layer_name = item.data(USER_ROLE)
+        payload = item.data(USER_ROLE)
+        if not payload or len(payload) < 2:
+            return
+        datasource_id, layer_name = payload[0], payload[1]
+        loadable = True if len(payload) < 3 else bool(payload[2])
+        if not loadable:
+            return
         self.load_layer_requested.emit(datasource_id, layer_name)
 
     def _on_layers_context_menu(self, pos) -> None:
         item = self.layers_list.itemAt(pos)
         if item is None:
             return
-        datasource_id, layer_name = item.data(USER_ROLE)
+        payload = item.data(USER_ROLE)
+        if not payload or len(payload) < 2:
+            return
+        datasource_id, layer_name = payload[0], payload[1]
+        loadable = True if len(payload) < 3 else bool(payload[2])
         menu = QMenu(self)
         load_action = menu.addAction("Load Layer")
+        load_action.setEnabled(loadable)
         menu.addSeparator()
         edit_config_action = menu.addAction("Edit Layer Config…")
         chosen = menu.exec(self.layers_list.viewport().mapToGlobal(pos))

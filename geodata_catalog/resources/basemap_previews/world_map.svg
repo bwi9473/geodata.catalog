@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="232" viewBox="0 0 368 232">
+  <rect width="368" height="232" fill="#dce8f0"/>
+  <!-- Simplified continent fills -->
+  <!-- Europe -->
+  <path d="M168 30 L200 28 L220 38 L228 55 L215 72 L195 80 L175 75 L162 62 L158 45 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- North Africa -->
+  <path d="M155 82 L230 78 L240 100 L232 120 L155 122 L148 100 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- British Isles -->
+  <path d="M148 32 L162 28 L165 42 L155 50 L144 45 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- Scandinavia -->
+  <path d="M175 10 L195 8 L210 20 L205 35 L190 38 L172 28 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- West Africa -->
+  <path d="M148 122 L200 118 L205 150 L180 178 L150 172 L138 148 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- North America -->
+  <path d="M20 20 L90 15 L105 40 L98 80 L70 100 L30 90 L10 60 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- South America -->
+  <path d="M60 108 L105 102 L115 140 L100 190 L72 200 L50 170 L45 135 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- Asia -->
+  <path d="M225 18 L330 12 L348 50 L335 90 L280 100 L230 80 L222 50 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- Australia -->
+  <path d="M295 140 L348 135 L352 180 L320 195 L285 185 L278 158 Z" fill="#e8ede8" stroke="#b0bcc0" stroke-width="1.2"/>
+  <!-- Label -->
+  <rect x="10" y="10" width="162" height="34" rx="7" fill="rgba(255,255,255,0.85)"/>
+  <text x="20" y="32" fill="#111827" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">World Map</text>
+</svg>

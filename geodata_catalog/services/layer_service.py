@@ -57,6 +57,8 @@ class LayerService:
             if layer_config is not None:
                 if layer_config.layername:
                     layer.display_name = layer_config.layername
+                if layer_config.category_label:
+                    layer.business_group = layer_config.category_label
                 if layer_config.label_column is not None:
                     layer.label_column = layer_config.label_column
                 layer.metadata["enable_fl_filter"] = bool(layer_config.enable_fl_filter)
@@ -87,3 +89,10 @@ class LayerService:
             if layer.layer_name == layer_name:
                 return layer
         return None
+
+    def list_configured_layers(self, datasource_id: str) -> list[LayerDefinition]:
+        """Return persisted layer definitions for a datasource.
+
+        Useful as fallback metadata when runtime discovery is temporarily unavailable.
+        """
+        return self._layer_repository.list_by_datasource(datasource_id)

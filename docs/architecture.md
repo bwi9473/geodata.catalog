@@ -21,7 +21,6 @@ geodata_catalog/           Root package
 │   ├── geojson_connector.py
 │   ├── kml_connector.py
 │   ├── oracle_connector.py
-│   ├── postgis_connector.py
 │   └── rest_connector.py
 │
 ├── metadata/              Persistence layer (QGIS QSettings)
@@ -81,9 +80,9 @@ geodata_catalog/           Root package
 │          └──────────────┘  └──────────────────────┘               │
 │                                                                    │
 │  Connectors (created on demand by DatasourceService.get_connector) │
-│  ┌────────┐ ┌─────────┐ ┌────────┐ ┌─────────┐ ┌──────────────┐  │
-│  │ Oracle │ │ PostGIS │ │GeoJSON │ │   KML   │ │     REST     │  │
-│  └────────┘ └─────────┘ └────────┘ └─────────┘ └──────────────┘  │
+│  ┌────────┐ ┌────────┐ ┌─────────┐ ┌──────────────┐  │
+│  │ Oracle │ │GeoJSON │ │   KML   │ │     REST     │  │
+│  └────────┘ └────────┘ └─────────┘ └──────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -99,7 +98,7 @@ Represents a registered connection to a data source.
 |---|---|---|
 | `id` | `str` | UUID generated at creation time |
 | `name` | `str` | User-facing name shown in the catalog tree |
-| `datasource_type` | `DatasourceType` | Enum: `oracle`, `postgis`, `geojson`, `kml`, `rest` |
+| `datasource_type` | `DatasourceType` | Enum: `oracle`, `geojson`, `kml`, `rest` |
 | `config` | `dict` | Connector-specific configuration (see [Adding Sources](adding-sources.md)) |
 | `enabled` | `bool` | Reserved for future filtering; currently always `True` |
 
@@ -130,7 +129,6 @@ Represents a single layer within a datasource.
 | Value | String key |
 |---|---|
 | `ORACLE` | `"oracle"` |
-| `POSTGIS` | `"postgis"` |
 | `GEOJSON` | `"geojson"` |
 | `KML` | `"kml"` |
 | `REST` | `"rest"` |
@@ -238,7 +236,6 @@ The `DatasourceService.get_connector()` method maps `DatasourceType` → connect
 ```python
 connector_map = {
     DatasourceType.ORACLE:   OracleConnector,
-    DatasourceType.POSTGIS:  PostgisConnector,
     DatasourceType.GEOJSON:  GeoJsonConnector,
     DatasourceType.KML:      KmlConnector,
     DatasourceType.REST:     RestConnector,
