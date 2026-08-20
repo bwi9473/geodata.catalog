@@ -557,6 +557,7 @@ class GeoDataCatalogPlugin:
         window = LayerCustomViewDock(
             self.iface.mainWindow(),
             layer=layer,
+            map_canvas=self.iface.mapCanvas(),
             layer_name=display_name,
             columns=view_columns,
             records=records,

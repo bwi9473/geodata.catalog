@@ -105,12 +105,64 @@ class _DummyLayer:
         return self._layer_name
 
 
+class _DummySelectableLayer:
+    def __init__(self):
+        self.selected_fids: list[int] = []
+
+    def selectByIds(self, fids: list[int]) -> None:
+        self.selected_fids = fids
+
+
+class _DummySelectedItem:
+    def __init__(self, row: int):
+        self._row = row
+
+    def row(self) -> int:
+        return self._row
+
+
+class _DummyTableSelection:
+    def __init__(self, selected_rows: list[int]):
+        self._selected_rows = selected_rows
+
+    def selectedItems(self) -> list[_DummySelectedItem]:
+        return [_DummySelectedItem(row) for row in self._selected_rows]
+
+
 def test_append_trailing_separator_adds_comma_space_once():
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     combo = _DummyCombo("DEC365")
 
     window._append_trailing_separator(combo)
     assert combo.lineEdit().text() == "DEC365, "
+
+
+def test_map_selection_combines_checked_and_clicked_record():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    layer = _DummySelectableLayer()
+    window._layer = layer
+    window._checked_fids = {11, 13}
+    window._current_fids = [11, 12, 13]
+    window._table = _DummyTableSelection([1])
+    window._logger = None
+
+    window._update_map_selection()
+
+    assert layer.selected_fids == [11, 12, 13]
+
+
+def test_map_selection_clears_layer_when_no_records_are_selected():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    layer = _DummySelectableLayer()
+    window._layer = layer
+    window._checked_fids = set()
+    window._current_fids = [11]
+    window._table = _DummyTableSelection([])
+    window._logger = None
+
+    window._update_map_selection()
+
+    assert layer.selected_fids == []
 
 
 def test_candidate_values_for_child_column_follow_parent_selection():

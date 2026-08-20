@@ -16,6 +16,8 @@ from geodata_catalog.services.layer_filter_service import (
 try:
     from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
     from qgis.PyQt.QtCore import QEvent, Qt
+    from qgis.PyQt.QtGui import QColor
+    from qgis.gui import QgsRubberBand
     from qgis.PyQt.QtWidgets import (
         QAbstractItemView,
         QCheckBox,
@@ -42,6 +44,8 @@ try:
 except ImportError:  # pragma: no cover
     QgsCoordinateTransformContext = None
     QgsVectorFileWriter = None
+    QColor = None
+    QgsRubberBand = None
     QEvent = None
     Qt = None
     QAbstractItemView = None
@@ -161,6 +165,7 @@ class LayerCustomViewWindow(QMainWindow):
         self,
         parent=None,
         layer=None,
+        map_canvas=None,
         layer_name: str = "",
         columns: list[dict[str, str]] | None = None,
         records: list[dict[str, object]] | None = None,
@@ -183,6 +188,8 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._logger = logger
         self._layer = layer
+        self._map_canvas = map_canvas
+        self._map_highlights: list[Any] = []
         self._columns = [c for c in (columns or []) if c.get("name")]
         self._all_records = records or []
         self._current_records: list[dict[str, object]] = []
@@ -554,8 +561,7 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setSelectionBehavior(self._table.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(self._table.SelectionMode.SingleSelection)
-        # Do not connect itemSelectionChanged to map selection to avoid
-        # triggering external plugins that listen to QGIS layer selection events.
+        self._table.itemSelectionChanged.connect(self._on_row_selection_changed)
         self._table.itemChanged.connect(self._on_item_changed)
 
         self._table.setColumnWidth(0, 28)
@@ -1276,24 +1282,62 @@ class LayerCustomViewWindow(QMainWindow):
             self._checked_fids.add(fid)
         else:
             self._checked_fids.discard(fid)
+        self._update_map_selection()
 
     def _on_row_selection_changed(self) -> None:
+        self._update_map_selection()
+
+    def _update_map_selection(self) -> None:
         if self._layer is None:
             return
+        selected_fids = set(self._checked_fids)
         selected = self._table.selectedItems()
-        if not selected:
-            return
-        row = selected[0].row()
-        if row < 0 or row >= len(self._current_fids):
-            return
-        fid = self._current_fids[row]
-        if fid < 0:
-            return
+        if selected:
+            row = selected[0].row()
+            if 0 <= row < len(self._current_fids):
+                fid = self._current_fids[row]
+                if fid >= 0:
+                    selected_fids.add(fid)
         try:
-            self._layer.selectByIds([fid])
+            selected_fid_list = sorted(selected_fids)
+            self._layer.selectByIds(selected_fid_list)
+            self._update_map_highlights(selected_fid_list)
         except Exception as exc:
             if self._logger is not None:
                 self._logger.warning(f"Unable to select feature on map: {exc}")
+
+    def _update_map_highlights(self, selected_fids: list[int]) -> None:
+        self._clear_map_highlights()
+        if QgsRubberBand is None or QColor is None or self._map_canvas is None:
+            return
+        if not hasattr(self._layer, "getFeature") or not hasattr(self._layer, "geometryType"):
+            return
+
+        for fid in selected_fids:
+            try:
+                feature = self._layer.getFeature(fid)
+                if hasattr(feature, "isValid") and not feature.isValid():
+                    continue
+                rubber_band = QgsRubberBand(self._map_canvas, self._layer.geometryType())
+                rubber_band.setToGeometry(feature.geometry(), self._layer)
+                rubber_band.setStrokeColor(QColor("#FFD400"))
+                rubber_band.setFillColor(QColor(255, 212, 0, 190))
+                rubber_band.setWidth(2)
+                rubber_band.show()
+                self._map_highlights.append(rubber_band)
+            except Exception as exc:
+                if self._logger is not None:
+                    self._logger.warning(f"Unable to highlight feature on map: {exc}")
+
+    def _clear_map_highlights(self) -> None:
+        for highlight in getattr(self, "_map_highlights", []):
+            highlight.hide()
+            highlight.reset()
+        self._map_highlights = []
+
+    def closeEvent(self, event) -> None:
+        self._clear_map_highlights()
+        super().closeEvent(event)
 
     def _on_export_selected_records(self) -> None:
         if self._layer is None:
