@@ -158,58 +158,6 @@ class LayerToolboxDock(QDockWidget):
         layer_row.addWidget(self._refresh_btn)
         root.addLayout(layer_row)
 
-        polygon_group = QGroupBox("Polygon and line tools")
-        polygon_form = QFormLayout(polygon_group)
-        self._polygon_vertices_check = QCheckBox("Show all vertices")
-        self._polygon_vertices_check.toggled.connect(self._on_polygon_vertices_toggled)
-        polygon_form.addRow("Vertices", self._polygon_vertices_check)
-        root.addWidget(polygon_group)
-
-        point_group = QGroupBox("Point tools")
-        point_form = QFormLayout(point_group)
-
-        self._point_connections_check = QCheckBox("Connect points with lines")
-        self._point_connections_check.toggled.connect(self._on_point_connections_toggled)
-        point_form.addRow("Connect", self._point_connections_check)
-
-        self._color_by_group_check = QCheckBox("Color lines by group")
-        self._color_by_group_check.setChecked(True)
-        self._color_by_group_check.toggled.connect(self._on_point_tool_settings_toggle_changed)
-        point_form.addRow("Style", self._color_by_group_check)
-
-        self._line_width_spin = QDoubleSpinBox()
-        self._line_width_spin.setRange(0.1, 10.0)
-        self._line_width_spin.setSingleStep(0.1)
-        self._line_width_spin.setDecimals(1)
-        self._line_width_spin.setValue(1.5)
-        self._line_width_spin.valueChanged.connect(self._on_point_tool_settings_value_changed)
-        point_form.addRow("Line width", self._line_width_spin)
-
-        self._group_field_combo = QComboBox()
-        self._group_field_combo.currentIndexChanged.connect(self._on_point_tool_settings_changed)
-        point_form.addRow("Group by", self._group_field_combo)
-
-        self._order_field_combo = QComboBox()
-        self._order_field_combo.currentIndexChanged.connect(self._on_point_tool_settings_changed)
-        point_form.addRow("Order by", self._order_field_combo)
-        root.addWidget(point_group)
-
-        fl_group = QGroupBox("Grouping rules")
-        fl_form = QFormLayout(fl_group)
-
-        self._fl_lower_field_combo = QComboBox()
-        self._fl_lower_field_combo.currentIndexChanged.connect(self._on_grouping_field_changed)
-        self._fl_upper_field_combo = QComboBox()
-        self._fl_upper_label = QLabel("Upper")
-        fl_form.addRow("Group by", self._fl_lower_field_combo)
-        fl_form.addRow(self._fl_upper_label, self._fl_upper_field_combo)
-
-        self._apply_fl_rules_btn = QPushButton("Apply grouping rules")
-        self._apply_fl_rules_btn.clicked.connect(self._on_apply_fl_rules_clicked)
-        fl_form.addRow(self._apply_fl_rules_btn)
-
-        root.addWidget(fl_group)
-
         root.addStretch(1)
         self.setWidget(body)
         self.setMinimumWidth(220)
@@ -325,8 +273,20 @@ class LayerToolboxDock(QDockWidget):
                 self._layer_combo.addItem(layer.name(), layer)
 
             self._sync_selected_basemap_tile()
-            self._refresh_field_combos()
-            self._sync_toggle_states()
+            if any(
+                widget is not None
+                for widget in (
+                    self._group_field_combo,
+                    self._order_field_combo,
+                    self._fl_lower_field_combo,
+                    self._fl_upper_field_combo,
+                    self._polygon_vertices_check,
+                    self._point_connections_check,
+                    self._apply_fl_rules_btn,
+                )
+            ):
+                self._refresh_field_combos()
+                self._sync_toggle_states()
             self._sync_marker_controls()
         finally:
             self._updating_ui = False
@@ -340,6 +300,19 @@ class LayerToolboxDock(QDockWidget):
     def _on_active_layer_changed(self, _index: int) -> None:
         if self._updating_ui:
             return
+        if not any(
+            widget is not None
+            for widget in (
+                self._group_field_combo,
+                self._order_field_combo,
+                self._fl_lower_field_combo,
+                self._fl_upper_field_combo,
+                self._polygon_vertices_check,
+                self._point_connections_check,
+                self._apply_fl_rules_btn,
+            )
+        ):
+            return
         self._updating_ui = True
         try:
             self._refresh_field_combos()
@@ -348,6 +321,12 @@ class LayerToolboxDock(QDockWidget):
             self._updating_ui = False
 
     def _refresh_field_combos(self) -> None:
+        if not all(
+            widget is not None
+            for widget in (self._group_field_combo, self._order_field_combo, self._fl_lower_field_combo, self._fl_upper_field_combo)
+        ):
+            return
+
         layer = self._selected_layer()
         self._group_field_combo.clear()
         self._order_field_combo.clear()
@@ -370,14 +349,10 @@ class LayerToolboxDock(QDockWidget):
             self._group_field_combo.addItem(field_name, field_name)
             self._order_field_combo.addItem(field_name, field_name)
 
-        # Determine which columns to show in the FL field combos.
-        # When a LayerConfig is available, use only the searchable_columns as options.
-        # The fl_lower and fl_upper fields are added separately only when enable_fl_filter=True.
         layer_config = self._resolve_layer_config(layer)
         if layer_config is not None:
             self._populate_fl_combos_from_config(layer_config, field_names)
         else:
-            # Fallback: show all layer fields (no config available)
             for field_name in field_names:
                 self._fl_lower_field_combo.addItem(field_name, field_name)
                 self._fl_upper_field_combo.addItem(field_name, field_name)
@@ -430,40 +405,63 @@ class LayerToolboxDock(QDockWidget):
                     self._fl_upper_field_combo.addItem(fl_name, fl_name)
 
     def _sync_toggle_states(self) -> None:
+        if not any(
+            widget is not None
+            for widget in (
+                self._polygon_vertices_check,
+                self._point_connections_check,
+                self._group_field_combo,
+                self._order_field_combo,
+                self._fl_lower_field_combo,
+                self._fl_upper_field_combo,
+                self._apply_fl_rules_btn,
+            )
+        ):
+            return
+
         layer = self._selected_layer()
-        polygon_enabled = self._is_polygon_layer(layer) or self._is_line_layer(layer)
-        point_enabled = self._is_point_layer(layer)
+        if self._polygon_vertices_check is not None:
+            polygon_enabled = self._is_polygon_layer(layer) or self._is_line_layer(layer)
+            self._polygon_vertices_check.setEnabled(polygon_enabled)
+            self._polygon_vertices_check.setChecked(
+                bool(layer is not None and self._toolbox_service.has_vertices_helper(layer))
+            )
 
-        self._polygon_vertices_check.setEnabled(polygon_enabled)
-        self._polygon_vertices_check.setChecked(
-            bool(layer is not None and self._toolbox_service.has_vertices_helper(layer))
-        )
+        if self._point_connections_check is not None:
+            point_enabled = self._is_point_layer(layer)
+            self._point_connections_check.setEnabled(point_enabled)
+            has_connections = bool(
+                layer is not None and self._toolbox_service.has_point_connections_helper(layer)
+            )
+            self._point_connections_check.setChecked(has_connections)
 
-        self._point_connections_check.setEnabled(point_enabled)
-        has_connections = bool(
-            layer is not None and self._toolbox_service.has_point_connections_helper(layer)
-        )
-        self._point_connections_check.setChecked(has_connections)
+        if self._group_field_combo is not None and self._order_field_combo is not None:
+            point_enabled = self._is_point_layer(layer)
+            self._group_field_combo.setEnabled(point_enabled)
+            self._order_field_combo.setEnabled(point_enabled)
 
-        self._group_field_combo.setEnabled(point_enabled)
-        self._order_field_combo.setEnabled(point_enabled)
-        self._color_by_group_check.setEnabled(point_enabled)
-        self._line_width_spin.setEnabled(point_enabled)
+        if self._color_by_group_check is not None:
+            self._color_by_group_check.setEnabled(self._is_point_layer(layer))
+        if self._line_width_spin is not None:
+            self._line_width_spin.setEnabled(self._is_point_layer(layer))
 
         has_layer = layer is not None
-        self._fl_lower_field_combo.setEnabled(has_layer)
-        self._fl_upper_field_combo.setEnabled(has_layer)
-        self._apply_fl_rules_btn.setEnabled(has_layer)
+        if self._fl_lower_field_combo is not None:
+            self._fl_lower_field_combo.setEnabled(has_layer)
+        if self._fl_upper_field_combo is not None:
+            self._fl_upper_field_combo.setEnabled(has_layer)
+        if self._apply_fl_rules_btn is not None:
+            self._apply_fl_rules_btn.setEnabled(has_layer)
 
-        # Show the Upper combo only when the layer has FL filter enabled.
-        layer_config = self._resolve_layer_config(layer) if has_layer else None
-        fl_enabled = layer_config is not None and bool(layer_config.enable_fl_filter)
-        self._fl_upper_field_combo.setVisible(fl_enabled)
-        if self._fl_upper_label is not None:
-            self._fl_upper_label.setVisible(fl_enabled)
+        if self._fl_upper_field_combo is not None:
+            layer_config = self._resolve_layer_config(layer) if has_layer else None
+            fl_enabled = layer_config is not None and bool(layer_config.enable_fl_filter)
+            self._fl_upper_field_combo.setVisible(fl_enabled)
+            if self._fl_upper_label is not None:
+                self._fl_upper_label.setVisible(fl_enabled)
 
-        # Sync the enabled state of the Upper combo based on the current Group-by selection.
-        self._sync_upper_combo_enabled()
+        if self._fl_upper_field_combo is not None and self._fl_upper_field_combo.isVisible():
+            self._sync_upper_combo_enabled()
 
     def _sync_upper_combo_enabled(self) -> None:
         """Enable the Upper combo only when fl_lower is selected as the group field."""

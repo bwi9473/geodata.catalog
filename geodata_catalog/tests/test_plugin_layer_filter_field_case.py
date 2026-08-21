@@ -1,5 +1,6 @@
 from geodata_catalog.plugin import GeoDataCatalogPlugin
 from geodata_catalog.services.layer_filter_service import FlightLevelFilter, LayerFilter
+from qgis.PyQt.QtWidgets import QAction
 
 
 class _FakeFields:
@@ -90,3 +91,42 @@ def test_apply_layer_filter_removes_cleared_distinct_selection_clause():
     plugin._apply_layer_filter(layer, layer_filter)
 
     assert layer.last_subset_string == ""
+
+
+def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_columns():
+    plugin = GeoDataCatalogPlugin.__new__(GeoDataCatalogPlugin)
+    plugin.iface = type("_Iface", (), {"mainWindow": lambda self: object()})()
+    plugin._logger = type("_L", (), {"warning": lambda self, _msg: None, "info": lambda self, _msg: None})()
+    plugin._layer_panel_filter_action = QAction("Quick Search", None)
+
+    class _FakeService:
+        def set_vertices_visible(self, _layer, _visible):
+            return None
+
+        def apply_value_grouping_rules(self, _layer, field_name):
+            return field_name
+
+    class _FakeLayerDef:
+        searchable_columns = [{"name": "status"}, {"name": "region"}]
+
+    class _FakeLayer:
+        def name(self):
+            return "Sample Layer"
+
+    plugin._layer_toolbox_service = _FakeService()
+    plugin._find_layer_definition_for_qgis_layer = lambda _layer: _FakeLayerDef()
+
+    menu = plugin._build_geodata_context_menu(_FakeLayer())
+    texts = [action.text() for action in menu.actions()]
+
+    assert "Show Vertices" in texts
+    assert "Hide Vertices" in texts
+    assert "Quick Search" in texts
+    assert "Group By" in texts
+
+    group_by = next(action for action in menu.actions() if getattr(action, "text", lambda: "")() == "Group By")
+    subgroup = group_by.menu()
+    subgroup_texts = [action.text() for action in subgroup.actions()]
+
+    assert "status" in subgroup_texts
+    assert "region" in subgroup_texts

@@ -117,13 +117,40 @@ def _install_qgis_stubs() -> None:
     class _QActionStub:
         def __init__(self, *args, **kwargs):
             self.triggered = _FakeSignal()
+            self._text = args[0] if args else ""
+
+        def text(self):
+            return self._text
+
+        def menu(self):
+            return None
 
     class _QMenuStub(_WidgetStub):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            self._text = args[0] if args else ""
+            self._actions = []
+
+        def title(self):
+            return self._text
+
         def addSeparator(self):
             return None
 
-        def addAction(self, *_args, **_kwargs):
-            return _QActionStub()
+        def addAction(self, action=None, *args, **_kwargs):
+            if action is not None:
+                self._actions.append(action)
+                return action
+            action_obj = _QActionStub(*args)
+            self._actions.append(action_obj)
+            return action_obj
+
+        def addMenu(self, menu):
+            self._actions.append(menu)
+            return menu
+
+        def actions(self):
+            return list(self._actions)
 
     qgis_pyqt_widgets.QDockWidget = _WidgetStub  # type: ignore[attr-defined]
     qgis_pyqt_widgets.QTableWidget = _WidgetStub  # type: ignore[attr-defined]

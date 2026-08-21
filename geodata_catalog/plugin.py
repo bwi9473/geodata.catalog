@@ -202,7 +202,7 @@ class GeoDataCatalogPlugin:
         self._layer_toolbox_dock.show()
 
     def _ensure_layer_panel_filter_action(self) -> None:
-        """Register layer filter action in layer panel context menu."""
+        """Register quick search action and hook into layer panel context menu events."""
         if self._layer_panel_filter_action is not None:
             return
 
@@ -210,7 +210,7 @@ class GeoDataCatalogPlugin:
         if layer_tree_view is None:
             return
 
-        self._layer_panel_filter_action = QAction("Layer Filter…", self.iface.mainWindow())
+        self._layer_panel_filter_action = QAction("Quick Search", self.iface.mainWindow())
         self._layer_panel_filter_action.triggered.connect(self._on_open_layer_filter)
 
         if hasattr(layer_tree_view, "contextMenuAboutToShow"):
@@ -234,16 +234,12 @@ class GeoDataCatalogPlugin:
         if menu is None:
             return
 
-        actions_to_add = []
-        if self._layer_panel_filter_action is not None:
-            actions_to_add.append(self._layer_panel_filter_action)
-
-        if not actions_to_add:
-            return
-
-        menu.addSeparator()
-        for action in actions_to_add:
-            menu.addAction(action)
+        layer = self._active_layer()
+        if layer is not None:
+            geo_menu = self._build_geodata_context_menu(layer)
+            if geo_menu is not None:
+                menu.addSeparator()
+                menu.addMenu(geo_menu)
 
     def _on_layer_tree_context_menu(self, pos) -> None:
         layer_tree_view = getattr(self.iface, "layerTreeView", lambda: None)()
@@ -255,22 +251,90 @@ class GeoDataCatalogPlugin:
             menu = create_menu()
             if menu is None:
                 return
-            actions_to_add = []
-            if self._layer_panel_filter_action is not None:
-                actions_to_add.append(self._layer_panel_filter_action)
-
-            if actions_to_add:
-                menu.addSeparator()
-                for action in actions_to_add:
-                    menu.addAction(action)
+            layer = self._active_layer()
+            if layer is not None:
+                geo_menu = self._build_geodata_context_menu(layer)
+                if geo_menu is not None:
+                    menu.addSeparator()
+                    menu.addMenu(geo_menu)
             menu.exec(layer_tree_view.viewport().mapToGlobal(pos))
             return
 
         # Final fallback: build a minimal menu only when the QGIS API cannot supply one.
         menu = QMenu(layer_tree_view)
-        if self._layer_panel_filter_action is not None:
-            menu.addAction(self._layer_panel_filter_action)
+        layer = self._active_layer()
+        if layer is not None:
+            geo_menu = self._build_geodata_context_menu(layer)
+            if geo_menu is not None:
+                menu.addMenu(geo_menu)
         menu.exec(layer_tree_view.viewport().mapToGlobal(pos))
+
+    def _build_geodata_context_menu(self, layer):
+        if layer is None:
+            return None
+
+        geo_menu = QMenu("GeoData", self.iface.mainWindow() if self.iface is not None else None)
+        layer_def = self._find_layer_definition_for_qgis_layer(layer)
+
+        quick_search_action = getattr(self, "_layer_panel_filter_action", None)
+        if quick_search_action is not None:
+            geo_menu.addAction(quick_search_action)
+
+        if self._supports_vertices_actions(layer):
+            if not geo_menu.isEmpty():
+                geo_menu.addSeparator()
+
+            show_vertices_action = QAction("Show Vertices", geo_menu)
+            show_vertices_action.triggered.connect(
+                lambda _checked=False: self._layer_toolbox_service.set_vertices_visible(layer, True)
+            )
+            geo_menu.addAction(show_vertices_action)
+
+            hide_vertices_action = QAction("Hide Vertices", geo_menu)
+            hide_vertices_action.triggered.connect(
+                lambda _checked=False: self._layer_toolbox_service.set_vertices_visible(layer, False)
+            )
+            geo_menu.addAction(hide_vertices_action)
+
+        group_menu = QMenu("Group By", geo_menu)
+        group_fields = []
+        if layer_def is not None and getattr(layer_def, "searchable_columns", None):
+            group_fields = [
+                str(column.get("name", "")).strip()
+                for column in layer_def.searchable_columns
+                if str(column.get("name", "")).strip()
+            ]
+
+        if group_fields:
+            for field_name in group_fields:
+                action = QAction(field_name, group_menu)
+                action.triggered.connect(
+                    lambda _checked=False, field_name=field_name: self._layer_toolbox_service.apply_value_grouping_rules(
+                        layer, field_name
+                    )
+                )
+                group_menu.addAction(action)
+        else:
+            placeholder = QAction("(no configured fields)", group_menu)
+            placeholder.setEnabled(False)
+            group_menu.addAction(placeholder)
+
+        geo_menu.addMenu(group_menu)
+        return geo_menu
+
+    def _supports_vertices_actions(self, layer) -> bool:
+        if layer is None or self._layer_toolbox_service is None:
+            return False
+
+        try:
+            if hasattr(layer, "wkbType"):
+                geometry_type = layer.wkbType()
+                if hasattr(self._layer_toolbox_service, "_is_vertex_source_layer"):
+                    return self._layer_toolbox_service._is_vertex_source_layer(layer)
+                return True
+            return False
+        except Exception:
+            return False
 
     def _dock_area(self):
         # Compatibility helper for QGIS 3.x (PyQt5) and QGIS 4.x (PyQt6).
@@ -469,7 +533,7 @@ class GeoDataCatalogPlugin:
     def _on_open_layer_filter(self) -> None:
         layer = self._active_layer()
         if layer is None:
-            self._show_error("Layer Filter", "No active QGIS layer is selected.")
+            self._show_error("Quick Search", "No active QGIS layer is selected.")
             return
         layer_def = self._find_layer_definition_for_qgis_layer(layer)
         self._open_unified_filter_custom_view(layer, layer_def)
