@@ -27,8 +27,6 @@ from geodata_catalog.ui.catalog_dockwidget import CatalogDockWidget
 from geodata_catalog.ui.datasource_dialog import DatasourceDialog
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
-from geodata_catalog.ui.layer_toolbox_dock import LayerToolboxDock
-from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QAction, QMenu, QMessageBox
@@ -75,13 +73,8 @@ class GeoDataCatalogPlugin:
             settings_manager=self._settings_manager,
         )
 
-        self._action: QAction | None = None
         self._open_catalog_action: QAction | None = None
-        self._open_loadable_layers_action: QAction | None = None
-        self._open_layer_toolbox_action: QAction | None = None
         self._dock_widget: CatalogDockWidget | None = None
-        self._loadable_layers_dock: LoadableLayersDockWidget | None = None
-        self._layer_toolbox_dock: LayerToolboxDock | None = None
         self._layer_cache: dict[str, dict[str, LayerDefinition]] = {}
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
@@ -89,26 +82,9 @@ class GeoDataCatalogPlugin:
 
     def initGui(self) -> None:
         try:
-            self._action = QAction("GeoData Catalog", self.iface.mainWindow())
-            self._action.triggered.connect(self._show_dock)
-            self.iface.addToolBarIcon(self._action)
-            self._open_catalog_action = QAction("Open Catalog", self.iface.mainWindow())
+            self._open_catalog_action = QAction("Open GeoData Explorer", self.iface.mainWindow())
             self._open_catalog_action.triggered.connect(self._show_dock)
             self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
-
-            self._open_loadable_layers_action = QAction(
-                "Open Loadable Layers Overlay", self.iface.mainWindow()
-            )
-            self._open_loadable_layers_action.triggered.connect(self._show_loadable_layers_dock)
-            self.iface.addPluginToMenu(
-                "GeoData Catalog/GeoData Catalog", self._open_loadable_layers_action
-            )
-
-            self._open_layer_toolbox_action = QAction("Open Layer Toolbox", self.iface.mainWindow())
-            self._open_layer_toolbox_action.triggered.connect(self._show_layer_toolbox_dock)
-            self.iface.addPluginToMenu(
-                "GeoData Catalog/GeoData Catalog", self._open_layer_toolbox_action
-            )
 
             self._show_dock()
             self._logger.info("GeoData Catalog initialized")
@@ -122,35 +98,9 @@ class GeoDataCatalogPlugin:
             self._dock_widget.deleteLater()
             self._dock_widget = None
 
-        if self._loadable_layers_dock is not None:
-            self.iface.removeDockWidget(self._loadable_layers_dock)
-            self._loadable_layers_dock.deleteLater()
-            self._loadable_layers_dock = None
-
-        if self._layer_toolbox_dock is not None:
-            self.iface.removeDockWidget(self._layer_toolbox_dock)
-            self._layer_toolbox_dock.deleteLater()
-            self._layer_toolbox_dock = None
-
-        if self._action is not None:
-            self.iface.removeToolBarIcon(self._action)
-            self._action = None
-
         if self._open_catalog_action is not None:
             self.iface.removePluginMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
             self._open_catalog_action = None
-
-        if self._open_loadable_layers_action is not None:
-            self.iface.removePluginMenu(
-                "GeoData Catalog/GeoData Catalog", self._open_loadable_layers_action
-            )
-            self._open_loadable_layers_action = None
-
-        if self._open_layer_toolbox_action is not None:
-            self.iface.removePluginMenu(
-                "GeoData Catalog/GeoData Catalog", self._open_layer_toolbox_action
-            )
-            self._open_layer_toolbox_action = None
 
         self._logger.info("GeoData Catalog unloaded")
 
@@ -164,42 +114,27 @@ class GeoDataCatalogPlugin:
             self._dock_widget.show_all_layers_toggled.connect(self._on_show_all_layers_toggled)
             self._dock_widget.load_layer_requested.connect(self._on_load_layer)
             self._dock_widget.edit_layer_config_requested.connect(self._on_edit_layer_config)
+            self._dock_widget.basemap_selected.connect(self._on_basemap_selected)
+            self._dock_widget.focus_muac_requested.connect(self._on_focus_muac_requested)
             self.iface.addDockWidget(self._dock_area(), self._dock_widget)
             self._try_tabify_with_core_docks(self._dock_widget)
         self._dock_widget.show()
+        self._dock_widget.set_basemap_options(
+            self._layer_toolbox_service.list_basemap_options(),
+            self._layer_toolbox_service.current_basemap_name(),
+        )
         self._refresh_datasources()
         self._ensure_layer_panel_filter_action()
 
-    def _show_loadable_layers_dock(self) -> None:
-        if self._loadable_layers_dock is None:
-            self._loadable_layers_dock = LoadableLayersDockWidget(self.iface.mainWindow())
-            self._loadable_layers_dock.load_layer_requested.connect(self._on_load_layer)
-            try:
-                ui_colors = self._system_configuration_repository.load_ui_colors()
-            except Exception:
-                ui_colors = DEFAULT_UI_COLORS
-            self._loadable_layers_dock.apply_theme(ui_colors)
-            self.iface.addDockWidget(self._dock_area(), self._loadable_layers_dock)
-            self._try_tabify_with_core_docks(self._loadable_layers_dock)
-            # Open as a floating panel by default for better overview.
-            self._loadable_layers_dock.setFloating(True)
-        self._loadable_layers_dock.show()
-        self._refresh_all_layers_view()
+    def _on_basemap_selected(self, basemap_name: str) -> None:
+        if not basemap_name:
+            return
+        self._layer_toolbox_service.set_basemap(basemap_name)
+        if self._dock_widget is not None:
+            self._dock_widget.set_selected_basemap(self._layer_toolbox_service.current_basemap_name())
 
-    def _show_layer_toolbox_dock(self) -> None:
-        if self._layer_toolbox_dock is None:
-            self._layer_toolbox_dock = LayerToolboxDock(
-                self.iface.mainWindow(),
-                toolbox_service=self._layer_toolbox_service,
-                logger=self._logger,
-                iface=self.iface,
-                layer_config_repository=self._layer_config_repository,
-            )
-            self.iface.addDockWidget(self._dock_area(), self._layer_toolbox_dock)
-            self._try_tabify_with_core_docks(self._layer_toolbox_dock)
-        self._layer_toolbox_service.ensure_preferred_basemap_loaded()
-        self._layer_toolbox_dock.refresh_layers()
-        self._layer_toolbox_dock.show()
+    def _on_focus_muac_requested(self) -> None:
+        self._layer_toolbox_service.focus_muac_on_canvas(self.iface)
 
     def _ensure_layer_panel_filter_action(self) -> None:
         """Register quick search action and hook into layer panel context menu events."""
@@ -485,7 +420,6 @@ class GeoDataCatalogPlugin:
                 )
             )
             self._dock_widget.set_all_layers(rows)
-            self._refresh_loadable_layers_overlay(rows)
             self._logger.info(f"All-layers view refreshed with {len(rows)} loadable layers")
         except GeoDataCatalogException as exc:
             self._show_error("Refresh All Layers", str(exc))
@@ -500,7 +434,6 @@ class GeoDataCatalogPlugin:
             layer_definition = self._resolve_layer(datasource_id, layer_name)
             self._loader_service.load_layer(layer_definition, connector)
             self._loaded_layer_keys.add(layer_definition.key())
-            self._refresh_overlay_loaded_state()
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
 
@@ -868,20 +801,6 @@ class GeoDataCatalogPlugin:
             message,
         )
 
-    def _refresh_loadable_layers_overlay(self, rows: list[dict[str, str | LayerDefinition]]) -> None:
-        if self._loadable_layers_dock is None:
-            return
-        try:
-            ui_colors = self._system_configuration_repository.load_ui_colors()
-        except Exception:
-            ui_colors = DEFAULT_UI_COLORS
-        self._loadable_layers_dock.apply_theme(ui_colors)
-        self._loadable_layers_dock.set_rows(
-            rows,
-            self._loaded_layer_keys,
-            str(ui_colors.get("primary", DEFAULT_UI_COLORS["primary"])),
-        )
-
     def _fallback_layers_for_unavailable_datasource(self, datasource) -> list[LayerDefinition]:
         configured_layers = self._layer_service.list_configured_layers(datasource.id)
         fallback: list[LayerDefinition] = []
@@ -899,11 +818,6 @@ class GeoDataCatalogPlugin:
         if layer is None:
             return False
         return bool(layer.metadata.get("unavailable", False))
-
-    def _refresh_overlay_loaded_state(self) -> None:
-        if self._loadable_layers_dock is None:
-            return
-        self._loadable_layers_dock.refresh_loaded_state(self._loaded_layer_keys)
 
     def _try_tabify_with_core_docks(self, dock_widget) -> None:
         if dock_widget is None:
