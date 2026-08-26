@@ -25,6 +25,7 @@ from geodata_catalog.services.qgis_loader_service import QgisLoaderService
 from geodata_catalog.services.style_service import StyleService
 from geodata_catalog.ui.catalog_dockwidget import CatalogDockWidget
 from geodata_catalog.ui.datasource_dialog import DatasourceDialog
+from geodata_catalog.ui.geometry_toolbar import GeometryToolbar
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
 
@@ -79,6 +80,7 @@ class GeoDataCatalogPlugin:
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
         self._layer_panel_filter_action: QAction | None = None
+        self._geometry_toolbar = GeometryToolbar(self.iface, self._logger)
 
     def initGui(self) -> None:
         try:
@@ -86,6 +88,7 @@ class GeoDataCatalogPlugin:
             self._open_catalog_action.triggered.connect(self._show_dock)
             self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
 
+            self._geometry_toolbar.initGui()
             self._show_dock()
             self._logger.info("GeoData Catalog initialized")
         except Exception as exc:
@@ -93,6 +96,8 @@ class GeoDataCatalogPlugin:
             raise
 
     def unload(self) -> None:
+        self._geometry_toolbar.unload()
+
         if self._dock_widget is not None:
             self.iface.removeDockWidget(self._dock_widget)
             self._dock_widget.deleteLater()
