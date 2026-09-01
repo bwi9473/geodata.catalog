@@ -137,18 +137,64 @@ def test_append_trailing_separator_adds_comma_space_once():
     assert combo.lineEdit().text() == "DEC365, "
 
 
-def test_map_selection_combines_checked_and_clicked_record():
+def test_record_cell_click_toggles_clicked_record():
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     layer = _DummySelectableLayer()
     window._layer = layer
     window._checked_fids = {11, 13}
     window._current_fids = [11, 12, 13]
-    window._table = _DummyTableSelection([1])
     window._logger = None
+    window._update_map_highlights = lambda _fids: None
+
+    window._on_record_cell_clicked(1, 1)
+    assert layer.selected_fids == [11, 12, 13]
+
+    window._on_record_cell_clicked(1, 1)
+    assert layer.selected_fids == [11, 13]
+
+
+def test_record_checkbox_click_is_handled_only_by_item_changed():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    layer = _DummySelectableLayer()
+    window._layer = layer
+    window._checked_fids = {11}
+    window._current_fids = [11]
+    window._logger = None
+    window._update_map_highlights = lambda _fids: None
+
+    window._on_record_cell_clicked(0, 0)
+
+    assert layer.selected_fids == []
+    assert window._checked_fids == {11}
+
+
+def test_clear_map_selection_removes_checked_features_and_highlights():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    layer = _DummySelectableLayer()
+    window._layer = layer
+    window._checked_fids = {11, 13}
+    window._table = type("_T", (), {"clearSelection": lambda self: None})()
+    window._logger = None
+    cleared = {"highlights": False}
+    window._clear_map_highlights = lambda: cleared.update(highlights=True)
+
+    window._clear_map_selection()
+
+    assert window._checked_fids == set()
+    assert layer.selected_fids == []
+    assert cleared["highlights"] is True
+
+
+def test_map_selection_uses_checked_records_only():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    layer = _DummySelectableLayer()
+    window._layer = layer
+    window._checked_fids = {11, 13}
+    window._logger = None
+    window._update_map_highlights = lambda _fids: None
 
     window._update_map_selection()
-
-    assert layer.selected_fids == [11, 12, 13]
+    assert layer.selected_fids == [11, 13]
 
 
 def test_map_selection_clears_layer_when_no_records_are_selected():

@@ -100,14 +100,22 @@ def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_col
     plugin._layer_panel_filter_action = QAction("Quick Search", None)
 
     class _FakeService:
+        def __init__(self):
+            self.flight_level_grouping_layer = None
+
         def set_vertices_visible(self, _layer, _visible):
             return None
 
         def apply_value_grouping_rules(self, _layer, field_name):
             return field_name
 
+        def apply_flight_level_range_rules(self, layer):
+            self.flight_level_grouping_layer = layer
+            return True
+
     class _FakeLayerDef:
         searchable_columns = [{"name": "status"}, {"name": "region"}]
+        metadata = {"enable_fl_filter": True}
 
     class _FakeLayer:
         def name(self):
@@ -130,3 +138,13 @@ def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_col
 
     assert "status" in subgroup_texts
     assert "region" in subgroup_texts
+    assert "Flight Level Band" in subgroup_texts
+
+    flight_level_action = next(
+        action
+        for action in subgroup.actions()
+        if action.text() == "Flight Level Band"
+    )
+    flight_level_action.trigger()
+
+    assert plugin._layer_toolbox_service.flight_level_grouping_layer is not None

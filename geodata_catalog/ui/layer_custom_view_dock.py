@@ -26,6 +26,7 @@ try:
         QDialogButtonBox,
         QFileDialog,
         QFormLayout,
+        QFrame,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -35,6 +36,7 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QScrollArea,
         QSpinBox,
         QTableWidget,
         QTableWidgetItem,
@@ -55,6 +57,7 @@ except ImportError:  # pragma: no cover
     QDialogButtonBox = None
     QFileDialog = None
     QFormLayout = None
+    QFrame = None
     QGroupBox = None
     QHBoxLayout = None
     QLabel = None
@@ -64,6 +67,7 @@ except ImportError:  # pragma: no cover
     QMainWindow = object
     QMessageBox = None
     QPushButton = None
+    QScrollArea = None
     QSpinBox = None
     QTableWidget = None
     QTableWidgetItem = None
@@ -221,6 +225,7 @@ class LayerCustomViewWindow(QMainWindow):
         self._attr_labels: dict[str, str] = {}
         self._attr_types: dict[str, str] = {}
         self._filter_by_map: dict[str, str] = {}
+        self._attr_scroll_area = None
 
         body = QWidget(self)
         self.setCentralWidget(body)
@@ -232,7 +237,7 @@ class LayerCustomViewWindow(QMainWindow):
         self._apply_theme()
         self._apply_view_state()
 
-        self.resize(1024, 720)
+        self.resize(1024, 800)
 
     @staticmethod
     def _normalize_ui_colors(ui_colors: dict[str, str] | None) -> dict[str, str]:
@@ -310,11 +315,22 @@ class LayerCustomViewWindow(QMainWindow):
         if self._flight_group is not None:
             panel_layout.addWidget(self._flight_group)
         if self._attr_group is not None:
-            panel_layout.addWidget(self._attr_group)
+            self._attr_scroll_area = QScrollArea()
+            self._attr_scroll_area.setWidgetResizable(True)
+            self._attr_scroll_area.setMaximumHeight(300)
+            if QFrame is not None:
+                no_frame = getattr(QFrame, "NoFrame", None)
+                if no_frame is None and hasattr(QFrame, "Shape"):
+                    no_frame = getattr(QFrame.Shape, "NoFrame", None)
+                if no_frame is not None:
+                    self._attr_scroll_area.setFrameShape(no_frame)
+            self._attr_scroll_area.setWidget(self._attr_group)
+            panel_layout.addWidget(self._attr_scroll_area)
 
         search_row = QHBoxLayout()
         search_row.addStretch(1)
         self._search_btn = QPushButton("Search")
+        self._search_btn.setDefault(True)
         self._search_btn.clicked.connect(self._on_search_clicked)
         search_row.addWidget(self._search_btn)
         panel_layout.addLayout(search_row)
@@ -561,7 +577,7 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setSelectionBehavior(self._table.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(self._table.SelectionMode.SingleSelection)
-        self._table.itemSelectionChanged.connect(self._on_row_selection_changed)
+        self._table.cellClicked.connect(self._on_record_cell_clicked)
         self._table.itemChanged.connect(self._on_item_changed)
 
         self._table.setColumnWidth(0, 28)
@@ -600,8 +616,8 @@ class LayerCustomViewWindow(QMainWindow):
     def _toggle_filter_sections(self) -> None:
         if self._flight_group is not None:
             self._flight_group.setVisible(self._toggle_fl_btn.isChecked())
-        if self._attr_group is not None:
-            self._attr_group.setVisible(self._toggle_attr_btn.isChecked())
+        if self._attr_scroll_area is not None:
+            self._attr_scroll_area.setVisible(self._toggle_attr_btn.isChecked())
         self._refresh_filter_toggle_buttons()
 
     def _refresh_filter_toggle_buttons(self) -> None:
@@ -714,6 +730,7 @@ class LayerCustomViewWindow(QMainWindow):
                 QMessageBox.warning(self, "Layer Filter", f"Unable to apply filter:\n{exc}")
                 return
 
+            self._clear_map_selection()
         self._reload_records_from_layer()
         self._current_page = 1
         self._apply_view_state()
@@ -997,6 +1014,8 @@ class LayerCustomViewWindow(QMainWindow):
         if selection_mode is not None:
             values_list.setSelectionMode(selection_mode)
 
+        values_list.itemDoubleClicked.connect(lambda _item: dialog.accept())
+
         for value in candidates:
             item = QListWidgetItem(value)
             values_list.addItem(item)
@@ -1004,6 +1023,7 @@ class LayerCustomViewWindow(QMainWindow):
                 item.setSelected(True)
 
         root.addWidget(values_list, 1)
+        values_list.itemActivated.connect(lambda _item: dialog.accept())
 
         helper = QLabel("Multi-select: Ctrl+click or Shift+click")
         helper.setObjectName("FilterHintLabel")
@@ -1284,27 +1304,40 @@ class LayerCustomViewWindow(QMainWindow):
             self._checked_fids.discard(fid)
         self._update_map_selection()
 
-    def _on_row_selection_changed(self) -> None:
+    def _on_record_cell_clicked(self, row: int, column: int) -> None:
+        if column == 0 or not 0 <= row < len(self._current_fids):
+            return
+        fid = self._current_fids[row]
+        if fid < 0:
+            return
+        if fid in self._checked_fids:
+            self._checked_fids.discard(fid)
+        else:
+            self._checked_fids.add(fid)
         self._update_map_selection()
 
     def _update_map_selection(self) -> None:
         if self._layer is None:
             return
-        selected_fids = set(self._checked_fids)
-        selected = self._table.selectedItems()
-        if selected:
-            row = selected[0].row()
-            if 0 <= row < len(self._current_fids):
-                fid = self._current_fids[row]
-                if fid >= 0:
-                    selected_fids.add(fid)
         try:
-            selected_fid_list = sorted(selected_fids)
+            selected_fid_list = sorted(self._checked_fids)
             self._layer.selectByIds(selected_fid_list)
             self._update_map_highlights(selected_fid_list)
         except Exception as exc:
             if self._logger is not None:
                 self._logger.warning(f"Unable to select feature on map: {exc}")
+
+    def _clear_map_selection(self) -> None:
+        self._checked_fids.clear()
+        if hasattr(self, "_table") and self._table is not None:
+            self._table.clearSelection()
+        if self._layer is not None and hasattr(self._layer, "selectByIds"):
+            try:
+                self._layer.selectByIds([])
+            except Exception as exc:
+                if self._logger is not None:
+                    self._logger.warning(f"Unable to clear map selection: {exc}")
+        self._clear_map_highlights()
 
     def _update_map_highlights(self, selected_fids: list[int]) -> None:
         self._clear_map_highlights()

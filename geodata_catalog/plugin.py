@@ -245,7 +245,12 @@ class GeoDataCatalogPlugin:
                 if str(column.get("name", "")).strip()
             ]
 
-        if group_fields:
+        flight_level_grouping_enabled = bool(
+            layer_def is not None
+            and layer_def.metadata.get("enable_fl_filter", True)
+        )
+
+        if group_fields or flight_level_grouping_enabled:
             for field_name in group_fields:
                 action = QAction(field_name, group_menu)
                 action.triggered.connect(
@@ -254,6 +259,12 @@ class GeoDataCatalogPlugin:
                     )
                 )
                 group_menu.addAction(action)
+            if flight_level_grouping_enabled:
+                flight_level_action = QAction("Flight Level Band", group_menu)
+                flight_level_action.triggered.connect(
+                    lambda _checked=False: self._layer_toolbox_service.apply_flight_level_range_rules(layer)
+                )
+                group_menu.addAction(flight_level_action)
         else:
             placeholder = QAction("(no configured fields)", group_menu)
             placeholder.setEnabled(False)
