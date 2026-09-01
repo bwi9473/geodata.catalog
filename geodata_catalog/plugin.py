@@ -11,8 +11,8 @@ from geodata_catalog.metadata.system_configuration_repository import (
     DEFAULT_UI_COLORS,
     SystemConfigurationRepository,
 )
+from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
-from geodata_catalog.models.datasource import DatasourceType
 from geodata_catalog.services.datasource_service import DatasourceService
 from geodata_catalog.services.layer_filter_service import (
     FlightLevelFilter,
@@ -470,6 +470,7 @@ class GeoDataCatalogPlugin:
     def _on_edit_layer_config(self, datasource_id: str, layer_name: str) -> None:
         """Open the per-layer config dialog and persist the result."""
         layer_def = self._resolve_layer(datasource_id, layer_name)
+        datasource = self._datasource_service.get_datasource(datasource_id)
         existing_config = self._layer_config_repository.get(datasource_id, layer_name)
 
         dialog = LayerConfigDialog(
@@ -477,6 +478,7 @@ class GeoDataCatalogPlugin:
             datasource_id=datasource_id,
             layer_name=layer_name,
             display_name=layer_def.display_name,
+            source_name=self._layer_config_source_label(datasource, layer_def),
             existing_config=existing_config,
             available_fields=self._discover_layer_fields(datasource_id, layer_name),
             refresh_fields=lambda: self._discover_layer_fields(datasource_id, layer_name),
@@ -494,6 +496,18 @@ class GeoDataCatalogPlugin:
             f"enable_fl_filter={config.enable_fl_filter}, "
             f"searchable_columns={config.searchable_columns}"
         )
+
+    @staticmethod
+    def _layer_config_source_label(datasource: Datasource, layer_def: LayerDefinition) -> str:
+        if datasource.datasource_type in {DatasourceType.GEOJSON, DatasourceType.KML}:
+            return str(
+                layer_def.metadata.get("path")
+                or datasource.config.get("path")
+                or layer_def.layer_name
+            )
+        if datasource.datasource_type is DatasourceType.REST:
+            return str(datasource.config.get("url") or layer_def.provider_uri or layer_def.layer_name)
+        return layer_def.layer_name
 
     def _discover_layer_fields(self, datasource_id: str, layer_name: str) -> list[dict[str, str]]:
         """Read the field schema from a connector without adding the layer to the project."""

@@ -55,6 +55,7 @@ class GeoJsonConnector(BaseConnector):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
         metadata = self.get_layer_metadata(layer_name)
+        self._raise_if_empty_layer(metadata)
         layer = QgsVectorLayer(metadata.provider_uri, metadata.display_name, metadata.provider_key)
         if not layer.isValid():
             raise LayerLoadException(f"Invalid GeoJSON file for '{metadata.display_name}'.")

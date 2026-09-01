@@ -43,6 +43,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
         layername="Layer A",
         category_label="Airspace",
         label_column="STATUS",
+        svg_marker_path="C:/symbols/radar.svg",
         enable_fl_filter=False,
         field_columns=[
             {"name": "STATUS", "label": "Status", "type": "varchar", "search": True},
@@ -56,6 +57,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
 
     assert loaded is not None
     assert loaded.category_label == "Airspace"
+    assert loaded.svg_marker_path == "C:/symbols/radar.svg"
     assert loaded.enable_fl_filter is False
     assert loaded.field_columns[0]["search"] is True
     assert loaded.field_columns[1]["export"] is True

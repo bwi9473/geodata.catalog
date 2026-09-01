@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from geodata_catalog.metadata.layer_config_repository import LayerConfig
+
+try:
+    from qgis.PyQt.QtGui import QIcon
+except ImportError:  # pragma: no cover
+    QIcon = None
 
 try:
     from qgis.PyQt.QtWidgets import (
         QCheckBox,
         QComboBox,
         QDialog,
+        QDialogButtonBox,
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
@@ -18,12 +25,14 @@ try:
         QPushButton,
         QTableWidget,
         QTableWidgetItem,
+        QToolButton,
         QVBoxLayout,
     )
 except ImportError:  # pragma: no cover
     QCheckBox = None
     QComboBox = None
     QDialog = object
+    QDialogButtonBox = None
     QFormLayout = None
     QGroupBox = None
     QHBoxLayout = None
@@ -33,7 +42,18 @@ except ImportError:  # pragma: no cover
     QPushButton = None
     QTableWidget = None
     QTableWidgetItem = None
+    QToolButton = None
     QVBoxLayout = None
+
+try:
+    from qgis.core import QgsApplication
+except ImportError:  # pragma: no cover
+    QgsApplication = None
+
+try:
+    from qgis.gui import QgsSvgSelectorWidget
+except ImportError:  # pragma: no cover
+    QgsSvgSelectorWidget = None
 
 
 class LayerConfigDialog(QDialog):
@@ -52,6 +72,8 @@ class LayerConfigDialog(QDialog):
         Technical layer name (used as the unique key).
     display_name:
         Human-readable layer name shown in the dialog title.
+    source_name:
+        Source identifier shown below the dialog title.
     existing_config:
         Pre-existing ``LayerConfig`` to pre-populate the controls, or ``None``
         for a blank/default state.
@@ -63,6 +85,7 @@ class LayerConfigDialog(QDialog):
         datasource_id: str = "",
         layer_name: str = "",
         display_name: str = "",
+        source_name: str = "",
         existing_config: LayerConfig | None = None,
         available_fields: list[dict[str, str]] | None = None,
         refresh_fields: Callable[[], list[dict[str, str]]] | None = None,
@@ -74,10 +97,11 @@ class LayerConfigDialog(QDialog):
         self._layer_name = layer_name
         self._refresh_fields = refresh_fields
         self._field_positions: dict[int, int] = {}
+        self._svg_marker_path = ""
         self.setWindowTitle("Layer Configuration")
         self.setModal(True)
         self.resize(800, 540)
-        self._build_ui(display_name or layer_name)
+        self._build_ui(display_name or layer_name, source_name or layer_name)
         if existing_config is not None:
             self._populate(existing_config, available_fields or [])
         else:
@@ -87,11 +111,15 @@ class LayerConfigDialog(QDialog):
     # UI construction                                                      #
     # ------------------------------------------------------------------ #
 
-    def _build_ui(self, display_name: str) -> None:
+    def _build_ui(self, display_name: str, source_name: str) -> None:
         layout = QVBoxLayout(self)
 
         title = QLabel(f"<b>{display_name}</b>")
         layout.addWidget(title)
+        source = QLabel(source_name)
+        source.setWordWrap(True)
+        source.setStyleSheet("color: #64748B; font-size: 11px; margin-bottom: 6px;")
+        layout.addWidget(source)
 
         # -- Label column --
         label_group = QGroupBox("Label Column")
@@ -115,6 +143,20 @@ class LayerConfigDialog(QDialog):
         label_form.addRow("Category", self._category_label_edit)
         label_form.addRow("Field name", self._label_edit)
         label_form.addRow("", self._enable_fl_filter_check)
+
+        self._svg_marker_combo = QComboBox()
+        self._svg_marker_combo.addItem("Simple marker (default)", "")
+        for name, path in self._aviation_svg_markers():
+            self._add_svg_marker_item(name, path)
+        self._svg_marker_combo.currentIndexChanged.connect(self._on_svg_marker_changed)
+        svg_browser_button = QToolButton()
+        svg_browser_button.setText("...")
+        svg_browser_button.setToolTip("Choose an SVG marker from the QGIS SVG browser")
+        svg_browser_button.clicked.connect(self._open_svg_browser)
+        svg_row = QHBoxLayout()
+        svg_row.addWidget(self._svg_marker_combo, 1)
+        svg_row.addWidget(svg_browser_button)
+        label_form.addRow("Point marker", svg_row)
         layout.addWidget(label_group)
 
         fields_group = QGroupBox("Layer Attributes")
@@ -188,6 +230,7 @@ class LayerConfigDialog(QDialog):
             layername=layername,
             category_label=category_label,
             label_column=label_col,
+            svg_marker_path=self._svg_marker_path or None,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
             field_columns=field_columns,
             key_column=key_column,
@@ -201,6 +244,7 @@ class LayerConfigDialog(QDialog):
         self._layername_edit.setText(config.layername or "")
         self._category_label_edit.setText(config.category_label or "")
         self._label_edit.setText(config.label_column or "")
+        self._set_svg_marker_path(config.svg_marker_path or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
         field_columns = self._merge_field_columns(config.field_columns, available_fields)
         self._populate_field_columns(field_columns)
@@ -277,6 +321,74 @@ class LayerConfigDialog(QDialog):
         for row in range(self._fields_table.rowCount()):
             if row != selected_row:
                 self._fields_table.cellWidget(row, 5).setChecked(False)
+
+    @classmethod
+    def _aviation_svg_markers(cls) -> list[tuple[str, str]]:
+        symbol_dir = Path(__file__).resolve().parent.parent / "resources" / "aviation_symbols"
+        return [
+            (
+                "Airport (QGIS transport)",
+                cls._qgis_svg_path("transport/transport_airport.svg", symbol_dir / "topo_airport.svg"),
+            ),
+            ("Radar", str(symbol_dir / "radar.svg")),
+            ("Waypoint", str(symbol_dir / "waypoint.svg")),
+            ("VOR/DME", str(symbol_dir / "vor_dme.svg")),
+            ("NDB", str(symbol_dir / "ndb.svg")),
+            ("Heliport", str(symbol_dir / "heliport.svg")),
+            ("Control tower", str(symbol_dir / "control_tower.svg")),
+        ]
+
+    @staticmethod
+    def _qgis_svg_path(relative_path: str, fallback_path: Path) -> str:
+        if QgsApplication is not None:
+            for svg_root in QgsApplication.svgPaths():
+                candidate = Path(svg_root) / relative_path
+                if candidate.is_file():
+                    return str(candidate)
+        return str(fallback_path)
+
+    def _on_svg_marker_changed(self, _index: int) -> None:
+        self._svg_marker_path = str(self._svg_marker_combo.currentData() or "")
+
+    def _add_svg_marker_item(self, name: str, svg_path: str) -> None:
+        if QIcon is None:
+            self._svg_marker_combo.addItem(name, svg_path)
+            return
+        self._svg_marker_combo.addItem(QIcon(svg_path), name, svg_path)
+
+    def _set_svg_marker_path(self, svg_path: str) -> None:
+        for index in range(self._svg_marker_combo.count()):
+            if self._svg_marker_combo.itemData(index) == svg_path:
+                self._svg_marker_combo.setCurrentIndex(index)
+                self._svg_marker_path = svg_path
+                return
+        if svg_path:
+            self._add_svg_marker_item("Custom SVG", svg_path)
+            self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
+        self._svg_marker_path = svg_path
+
+    def _open_svg_browser(self) -> None:
+        if QgsSvgSelectorWidget is None:
+            QMessageBox.warning(self, "SVG marker", "The QGIS SVG browser is not available.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose SVG Marker")
+        dialog.resize(620, 460)
+        layout = QVBoxLayout(dialog)
+        selector = QgsSvgSelectorWidget(dialog)
+        if self._svg_marker_path:
+            selector.setSvgPath(self._svg_marker_path)
+        selected_path = {"value": self._svg_marker_path}
+        selector.svgSelected.connect(lambda path: selected_path.__setitem__("value", str(path)))
+        layout.addWidget(selector)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        execute_dialog = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        accepted = getattr(getattr(QDialog, "DialogCode", QDialog), "Accepted")
+        if execute_dialog() == accepted:
+            self._set_svg_marker_path(selected_path["value"])
 
     def _field_columns_from_table(self) -> list[dict[str, str | bool]]:
         columns: list[dict[str, str | bool]] = []

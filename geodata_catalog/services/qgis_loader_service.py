@@ -87,6 +87,7 @@ class QgisLoaderService:
         self._apply_filter(layer, layer_definition.filter_expression)
         self._apply_labels(layer, layer_definition.label_column)
         self._style_service.apply_default_style(layer, layer_definition.default_style_file)
+        self._style_service.apply_svg_marker(layer, layer_definition.metadata.get("svg_marker_path"))
         self._tag_layer_source(layer, layer_definition)
 
         if self._project is None:  # pragma: no cover

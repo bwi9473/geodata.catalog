@@ -143,12 +143,16 @@ class CatalogDockWidget(QDockWidget):
         display_layout.setSpacing(8)
 
         self.basemap_combo = QComboBox()
-        self.basemap_combo.currentIndexChanged.connect(self._on_basemap_changed)
+        self.show_basemap_btn = QPushButton("Show Map")
+        self.show_basemap_btn.clicked.connect(self._emit_selected_basemap)
         display_layout.addRow("Map", self.basemap_combo)
 
         self.focus_muac_btn = QPushButton("Focus MUAC")
         self.focus_muac_btn.clicked.connect(self.focus_muac_requested.emit)
-        display_layout.addRow("Map Tools", self.focus_muac_btn)
+        map_tools = QHBoxLayout()
+        map_tools.addWidget(self.focus_muac_btn)
+        map_tools.addWidget(self.show_basemap_btn)
+        display_layout.addRow("Map Tools", map_tools)
 
         root.addWidget(display_group)
 
@@ -377,9 +381,7 @@ class CatalogDockWidget(QDockWidget):
         datasource_id, layer_name = payload[0], payload[1]
         self.edit_layer_config_requested.emit(datasource_id, layer_name)
 
-    def _on_basemap_changed(self, _index: int) -> None:
-        if self._updating_basemap:
-            return
+    def _emit_selected_basemap(self) -> None:
         name = str(self.basemap_combo.currentData() or "").strip()
         if not name:
             return

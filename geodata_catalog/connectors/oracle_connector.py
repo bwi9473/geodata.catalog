@@ -84,6 +84,7 @@ class OracleConnector(BaseConnector):
         configured_key = str(key_column or "").strip()
         if configured_key and not self._is_safe_identifier(configured_key):
             raise LayerLoadException(f"Invalid Oracle key column '{configured_key}'.")
+        self._raise_if_empty_layer(metadata)
         uri = self._build_layer_uri(
             metadata.owner or "",
             metadata.object_name or "",

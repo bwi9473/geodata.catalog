@@ -49,9 +49,13 @@ class FakeConnector:
 class FakeStyleService:
     def __init__(self):
         self.applied = None
+        self.svg_marker = None
 
     def apply_default_style(self, layer, style_file):
         self.applied = (layer, style_file)
+
+    def apply_svg_marker(self, layer, svg_path):
+        self.svg_marker = (layer, svg_path)
 
 
 class FakeLogger:
@@ -96,8 +100,26 @@ def test_loader_adds_valid_layer_to_project():
 
     assert layer in project.layers
     assert style_service.applied[1] == "style.qml"
+    assert style_service.svg_marker[1] is None
     assert layer.subset_string == '"fl_lower" <= 355 AND "fl_upper" >= 265'
     assert layer.assigned_name == "Airspace"
+
+
+def test_loader_applies_configured_svg_marker():
+    style_service = FakeStyleService()
+    service = QgisLoaderService(style_service, FakeLogger(), project=FakeProject())
+    layer_definition = LayerDefinition(
+        datasource_id="ds",
+        layer_name="aerodromes",
+        display_name="Aerodromes",
+        provider_key="ogr",
+        provider_uri="path",
+        metadata={"svg_marker_path": "C:/symbols/topo_airport.svg"},
+    )
+
+    service.load_layer(layer_definition, FakeConnector(FakeLayer(valid=True)))
+
+    assert style_service.svg_marker[1] == "C:/symbols/topo_airport.svg"
 
 
 def test_loader_rejects_invalid_layer():

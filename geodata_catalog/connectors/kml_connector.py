@@ -66,6 +66,10 @@ class KmlConnector(BaseConnector):
         layer = QgsVectorLayer(metadata.provider_uri, metadata.display_name, metadata.provider_key)
         if not layer.isValid():
             raise LayerLoadException(f"Invalid KML layer '{metadata.display_name}'.")
+        if layer.featureCount() == 0:
+            raise LayerLoadException(
+                f"Layer '{metadata.display_name}' is not loaded because it contains no data."
+            )
         return layer
 
     def test_connection(self) -> bool:

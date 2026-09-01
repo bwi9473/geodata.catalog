@@ -1,4 +1,8 @@
+import pytest
+
+import geodata_catalog.connectors.oracle_connector as oracle_connector_module
 from geodata_catalog.connectors.oracle_connector import OracleConnector
+from geodata_catalog.exceptions import LayerLoadException
 
 
 class FakeCursor:
@@ -73,3 +77,36 @@ def test_oracle_connector_discovers_spatial_layers(monkeypatch):
     assert layers[0].srid == 4326
     assert layers[0].geometry_type == "POLYGON"
     assert layers[0].feature_count == 25
+
+
+def test_oracle_connector_reports_empty_table_before_qgis_load(monkeypatch):
+    connector = OracleConnector(
+        datasource_id="oracle-1",
+        config={
+            "host": "x",
+            "port": 1521,
+            "service_name": "y",
+            "username": "u",
+            "password": "p",
+        },
+    )
+    monkeypatch.setattr(
+        connector,
+        "get_layer_metadata",
+        lambda layer_name: oracle_connector_module.LayerDefinition(
+            datasource_id="oracle-1",
+            layer_name=layer_name,
+            display_name="AIRSPACE.EMPTY_TABLE",
+            provider_key="oracle",
+            provider_uri="",
+            feature_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        oracle_connector_module,
+        "QgsVectorLayer",
+        lambda *args: pytest.fail("QGIS should not load an empty Oracle table"),
+    )
+
+    with pytest.raises(LayerLoadException, match="contains no data"):
+        connector.load_layer("AIRSPACE.EMPTY_TABLE")
