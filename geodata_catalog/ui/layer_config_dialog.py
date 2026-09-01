@@ -56,6 +56,14 @@ except ImportError:  # pragma: no cover
     QgsSvgSelectorWidget = None
 
 
+def _enum(owner, scope: str, member: str):
+    """Resolve a Qt enum member for both QGIS 3 and QGIS 4 bindings."""
+    scoped = getattr(owner, scope, None)
+    if scoped is not None and hasattr(scoped, member):
+        return getattr(scoped, member)
+    return getattr(owner, member)
+
+
 class LayerConfigDialog(QDialog):
     """Dialog for editing per-layer display and search configuration.
 
@@ -381,12 +389,15 @@ class LayerConfigDialog(QDialog):
         selected_path = {"value": self._svg_marker_path}
         selector.svgSelected.connect(lambda path: selected_path.__setitem__("value", str(path)))
         layout.addWidget(selector)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(
+            _enum(QDialogButtonBox, "StandardButton", "Ok")
+            | _enum(QDialogButtonBox, "StandardButton", "Cancel")
+        )
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         execute_dialog = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
-        accepted = getattr(getattr(QDialog, "DialogCode", QDialog), "Accepted")
+        accepted = _enum(QDialog, "DialogCode", "Accepted")
         if execute_dialog() == accepted:
             self._set_svg_marker_path(selected_path["value"])
 

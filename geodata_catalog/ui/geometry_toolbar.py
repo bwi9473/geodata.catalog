@@ -11,9 +11,9 @@ try:
         QgsProject,
         QgsRectangle,
     )
-    from qgis.gui import QgsMapToolIdentify
+    from qgis.gui import QgsMapToolIdentify, QgsRubberBand
     from qgis.PyQt.QtCore import QPoint, QSize, Qt
-    from qgis.PyQt.QtGui import QCursor, QIcon
+    from qgis.PyQt.QtGui import QColor, QCursor, QIcon
     from qgis.PyQt.QtWidgets import (
         QAction,
         QDialog,
@@ -32,9 +32,11 @@ except ImportError:  # pragma: no cover
     QgsProject = None
     QgsRectangle = None
     QgsMapToolIdentify = object
+    QgsRubberBand = None
     QPoint = None
     QSize = None
     Qt = None
+    QColor = None
     QCursor = None
     QIcon = None
     QAction = None
@@ -139,7 +141,6 @@ class IdentifyMapTool(QgsMapToolIdentify):
 
     MAX_RESULTS = 10
     HIGHLIGHT_COLOR = (255, 0, 0)
-    HOVER_COLOR = (255, 140, 0)
 
     def __init__(self, canvas, parent_widget, logger: PluginLogger) -> None:
         super().__init__(canvas)
@@ -147,43 +148,23 @@ class IdentifyMapTool(QgsMapToolIdentify):
         self._logger = logger
         self._popup: IdentifyResultsPopup | None = None
         self._result_bands: list = []
-        self._hover_bands: list = []
-        self._last_hover_pos = None
         self.setCursor(QCursor(_enum(Qt, "CursorShape", "ArrowCursor")))
 
     def canvasReleaseEvent(self, event) -> None:
         pos = self._event_pos(event)
         hits = self._collect_hits(int(pos.x()), int(pos.y()))
 
-        self._clear_bands(self._hover_bands)
         self._clear_bands(self._result_bands)
         self._highlight(hits, self._result_bands, self.HIGHLIGHT_COLOR, 2)
 
         blocks = [self._hit_to_block(hit) for hit in hits] or [("No features found", [])]
         self._show_popup(blocks, event)
 
-    def canvasMoveEvent(self, event) -> None:
-        pos = self._event_pos(event)
-        if self._last_hover_pos is not None:
-            delta = abs(pos.x() - self._last_hover_pos[0]) + abs(pos.y() - self._last_hover_pos[1])
-            if delta < 4:
-                return
-        self._last_hover_pos = (pos.x(), pos.y())
-
-        hits = self._spatial_hits(int(pos.x()), int(pos.y()), limit=1)
-        self._clear_bands(self._hover_bands)
-        if hits:
-            self._highlight(hits, self._hover_bands, self.HOVER_COLOR, 2)
-            self.setCursor(QCursor(_enum(Qt, "CursorShape", "PointingHandCursor")))
-        else:
-            self.setCursor(QCursor(_enum(Qt, "CursorShape", "ArrowCursor")))
-
     def deactivate(self) -> None:
         self.clear_highlights()
         super().deactivate()
 
     def clear_highlights(self) -> None:
-        self._clear_bands(self._hover_bands)
         self._clear_bands(self._result_bands)
 
     def _collect_hits(self, x: int, y: int) -> list[dict]:
@@ -294,7 +275,7 @@ class IdentifyMapTool(QgsMapToolIdentify):
 
     def _highlight(self, hits: list[dict], bands: list, color: tuple[int, int, int], width: int) -> None:
         canvas = self.canvas()
-        if canvas is None or QgsRubberBand is None:
+        if canvas is None or QgsRubberBand is None or QColor is None:
             return
 
         for hit in hits:
