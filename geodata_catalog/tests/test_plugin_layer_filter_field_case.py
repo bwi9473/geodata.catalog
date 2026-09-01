@@ -113,6 +113,9 @@ def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_col
             self.flight_level_grouping_layer = layer
             return True
 
+        def apply_flight_level_preset_rules(self, _layer, _presets):
+            return True
+
     class _FakeLayerDef:
         searchable_columns = [{"name": "status"}, {"name": "region"}]
         metadata = {"enable_fl_filter": True}
@@ -139,6 +142,7 @@ def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_col
     assert "status" in subgroup_texts
     assert "region" in subgroup_texts
     assert "Flight Level Band" in subgroup_texts
+    assert "Flight Level Presets" in subgroup_texts
 
     flight_level_action = next(
         action

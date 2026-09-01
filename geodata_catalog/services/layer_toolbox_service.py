@@ -394,6 +394,17 @@ class LayerToolboxService:
             return True
         return self.set_basemap(self.preferred_basemap_name())
 
+    def ensure_default_basemap_for_empty_project(self) -> bool:
+        """Load the local World Map only when no map layers are currently shown."""
+        if self._project is None:
+            return False
+        try:
+            if self._project.mapLayers():
+                return True
+        except Exception:
+            return False
+        return self.set_basemap(self.default_basemap_name())
+
     def current_basemap_name(self) -> str:
         layer = self._find_existing_basemap_layer()
         if layer is None:
@@ -497,6 +508,103 @@ class LayerToolboxService:
             layer.triggerRepaint()
         self._logger.info(
             f"Applied FL range rules on '{layer.name()}' with {len(ranges)} distinct range(s)."
+        )
+        return True
+
+    def apply_flight_level_preset_rules(
+        self,
+        layer,
+        presets: list[dict[str, int | str]],
+        lower_field: str = "fl_lower",
+        upper_field: str = "fl_upper",
+    ) -> bool:
+        """Apply renderer rules for configured flight-level preset ranges.
+
+        The rules are built directly from system configuration; no feature scan
+        is needed before rendering the layer. Bands outside every preset are
+        retained by a final ELSE rule.
+        """
+        if not self._is_vector_layer(layer):
+            self._logger.warning("Cannot apply FL preset rules: selected layer is not vector-based.")
+            return False
+        if QgsRuleBasedRenderer is None or QgsSymbol is None:
+            self._logger.warning("Cannot apply FL preset rules: QGIS renderer classes are unavailable.")
+            return False
+
+        resolved_lower = self._resolve_layer_field_name(layer, lower_field)
+        resolved_upper = self._resolve_layer_field_name(layer, upper_field)
+        if not resolved_lower or not resolved_upper:
+            self._logger.warning("Cannot apply FL preset rules: FL fields are missing on selected layer.")
+            return False
+
+        normalized_presets: list[tuple[str, int, int]] = []
+        for preset in presets:
+            try:
+                name = str(preset.get("name", "")).strip()
+                lower = int(preset.get("lower"))
+                upper = int(preset.get("upper"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if name and lower <= upper:
+                normalized_presets.append((name, lower, upper))
+        if not normalized_presets:
+            self._logger.warning("Cannot apply FL preset rules: no valid presets are configured.")
+            return False
+
+        base_symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if base_symbol is None:
+            self._logger.warning("Cannot apply FL preset rules: failed to create base symbol.")
+            return False
+
+        renderer = QgsRuleBasedRenderer(base_symbol)
+        root_rule = renderer.rootRule()
+        try:
+            for child in list(root_rule.children()):
+                root_rule.removeChild(child)
+        except Exception:
+            pass
+
+        escaped_lower = resolved_lower.replace('"', '""')
+        escaped_upper = resolved_upper.replace('"', '""')
+        for name, lower, upper in normalized_presets:
+            symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+            if symbol is None:
+                continue
+            symbol_color = self._color_for_group_key(name)
+            if symbol_color is not None:
+                symbol.setColor(symbol_color)
+            if hasattr(symbol, "setOpacity"):
+                symbol.setOpacity(self.GROUPING_RULE_OPACITY)
+
+            rule = QgsRuleBasedRenderer.Rule(symbol)
+            rule.setLabel(f"{name} ({lower}-{upper})")
+            rule.setFilterExpression(
+                f'"{escaped_lower}" >= {lower} AND "{escaped_upper}" <= {upper}'
+            )
+            root_rule.appendChild(rule)
+
+        other_symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if other_symbol is not None:
+            other_color = self._color_for_group_key("other-flight-levels")
+            if other_color is not None:
+                other_symbol.setColor(other_color)
+            if hasattr(other_symbol, "setOpacity"):
+                other_symbol.setOpacity(self.GROUPING_RULE_OPACITY)
+            other_rule = QgsRuleBasedRenderer.Rule(other_symbol)
+            other_rule.setLabel("Other Flight Levels")
+            other_rule.setIsElse(True)
+            root_rule.appendChild(other_rule)
+
+        layer.setRenderer(renderer)
+        if hasattr(layer, "setOpacity"):
+            try:
+                layer.setOpacity(self.GROUPING_RULE_OPACITY)
+            except Exception as exc:
+                self._logger.warning(f"Could not set grouping layer opacity: {exc}")
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
+        self._logger.info(
+            f"Applied FL preset rules on '{layer.name()}' with {len(normalized_presets)} preset(s)."
         )
         return True
 

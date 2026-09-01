@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from geodata_catalog.metadata.layer_config_repository import LayerConfig
 
 try:
-    from qgis.PyQt.QtCore import Qt
     from qgis.PyQt.QtWidgets import (
         QCheckBox,
         QComboBox,
@@ -13,13 +14,13 @@ try:
         QHBoxLayout,
         QLabel,
         QLineEdit,
+        QMessageBox,
         QPushButton,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
     )
 except ImportError:  # pragma: no cover
-    Qt = None
     QCheckBox = None
     QComboBox = None
     QDialog = object
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
+    QMessageBox = None
     QPushButton = None
     QTableWidget = None
     QTableWidgetItem = None
@@ -62,18 +64,24 @@ class LayerConfigDialog(QDialog):
         layer_name: str = "",
         display_name: str = "",
         existing_config: LayerConfig | None = None,
+        available_fields: list[dict[str, str]] | None = None,
+        refresh_fields: Callable[[], list[dict[str, str]]] | None = None,
     ) -> None:
         if QDialog is object:  # pragma: no cover
             raise RuntimeError("QGIS runtime is not available.")
         super().__init__(parent)
         self._datasource_id = datasource_id
         self._layer_name = layer_name
+        self._refresh_fields = refresh_fields
+        self._field_positions: dict[int, int] = {}
         self.setWindowTitle("Layer Configuration")
         self.setModal(True)
-        self.resize(560, 400)
+        self.resize(800, 540)
         self._build_ui(display_name or layer_name)
         if existing_config is not None:
-            self._populate(existing_config)
+            self._populate(existing_config, available_fields or [])
+        else:
+            self._populate_field_columns(available_fields or [])
 
     # ------------------------------------------------------------------ #
     # UI construction                                                      #
@@ -109,58 +117,25 @@ class LayerConfigDialog(QDialog):
         label_form.addRow("", self._enable_fl_filter_check)
         layout.addWidget(label_group)
 
-        # -- Searchable columns --
-        search_group = QGroupBox("Searchable Columns")
-        search_layout = QVBoxLayout(search_group)
-
-        self._search_table = QTableWidget(0, 5)
-        self._search_table.setHorizontalHeaderLabels(
-            ["Field Name", "Display Label", "Data Type", "Use Distinct", "Filter By"]
+        fields_group = QGroupBox("Layer Attributes")
+        fields_layout = QVBoxLayout(fields_group)
+        self._fields_table = QTableWidget(0, 8)
+        self._fields_table.setHorizontalHeaderLabels(
+            ["Field Name", "Display Label", "Data Type", "Search", "Export", "Key Column", "Use Distinct", "Filter By"]
         )
-        self._search_table.horizontalHeader().setStretchLastSection(True)
-        self._search_table.setColumnWidth(0, 150)
-        self._search_table.setColumnWidth(1, 130)
-        self._search_table.setColumnWidth(2, 90)
-        self._search_table.setColumnWidth(3, 80)
-        self._search_table.setColumnWidth(4, 120)
-        self._search_table.setMinimumHeight(140)
-        search_layout.addWidget(self._search_table)
+        self._fields_table.horizontalHeader().setStretchLastSection(True)
+        for column, width in enumerate([150, 150, 90, 60, 60, 85, 80]):
+            self._fields_table.setColumnWidth(column, width)
+        self._fields_table.setMinimumHeight(250)
+        fields_layout.addWidget(self._fields_table)
 
-        tbl_buttons = QHBoxLayout()
-        add_btn = QPushButton("Add Row")
-        remove_btn = QPushButton("Remove Row")
-        add_btn.clicked.connect(self._add_search_row)
-        remove_btn.clicked.connect(self._remove_search_row)
-        tbl_buttons.addWidget(add_btn)
-        tbl_buttons.addWidget(remove_btn)
-        tbl_buttons.addStretch(1)
-        search_layout.addLayout(tbl_buttons)
-
-        layout.addWidget(search_group)
-
-        # -- Custom view columns --
-        view_group = QGroupBox("Custom View Columns")
-        view_layout = QVBoxLayout(view_group)
-
-        self._view_table = QTableWidget(0, 3)
-        self._view_table.setHorizontalHeaderLabels(["Field Name", "Display Label", "Data Type"])
-        self._view_table.horizontalHeader().setStretchLastSection(True)
-        self._view_table.setColumnWidth(0, 200)
-        self._view_table.setColumnWidth(1, 170)
-        self._view_table.setMinimumHeight(140)
-        view_layout.addWidget(self._view_table)
-
-        view_buttons = QHBoxLayout()
-        add_view_btn = QPushButton("Add Row")
-        remove_view_btn = QPushButton("Remove Row")
-        add_view_btn.clicked.connect(self._add_view_row)
-        remove_view_btn.clicked.connect(self._remove_view_row)
-        view_buttons.addWidget(add_view_btn)
-        view_buttons.addWidget(remove_view_btn)
-        view_buttons.addStretch(1)
-        view_layout.addLayout(view_buttons)
-
-        layout.addWidget(view_group)
+        field_buttons = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh Attributes")
+        refresh_btn.clicked.connect(self._on_refresh_fields)
+        field_buttons.addWidget(refresh_btn)
+        field_buttons.addStretch(1)
+        fields_layout.addLayout(field_buttons)
+        layout.addWidget(fields_group)
 
         # -- Buttons --
         btn_row = QHBoxLayout()
@@ -177,34 +152,22 @@ class LayerConfigDialog(QDialog):
     # Slot handlers                                                        #
     # ------------------------------------------------------------------ #
 
-    def _add_search_row(self) -> None:
-        row = self._search_table.rowCount()
-        self._search_table.insertRow(row)
-        self._set_type_combo_at_row(self._search_table, row, "varchar")
-        # Add checkbox widget for "Use Distinct" in column 3
-        checkbox = QCheckBox()
-        checkbox.setChecked(False)
-        self._search_table.setCellWidget(row, 3, checkbox)
-        # Add free-text field for "Filter By" in column 4
-        filter_by_edit = QLineEdit()
-        filter_by_edit.setPlaceholderText("parent field name (optional)")
-        filter_by_edit.setClearButtonEnabled(True)
-        self._search_table.setCellWidget(row, 4, filter_by_edit)
-
-    def _remove_search_row(self) -> None:
-        current = self._search_table.currentRow()
-        if current >= 0:
-            self._search_table.removeRow(current)
-
-    def _add_view_row(self) -> None:
-        row = self._view_table.rowCount()
-        self._view_table.insertRow(row)
-        self._set_type_combo_at_row(self._view_table, row, "varchar")
-
-    def _remove_view_row(self) -> None:
-        current = self._view_table.currentRow()
-        if current >= 0:
-            self._view_table.removeRow(current)
+    def _on_refresh_fields(self) -> None:
+        if self._refresh_fields is None:
+            return
+        standard_button = getattr(QMessageBox, "StandardButton", QMessageBox)
+        yes_button = standard_button.Yes
+        no_button = standard_button.No
+        response = QMessageBox.warning(
+            self,
+            "Refresh Attributes",
+            "Refreshing attributes will clear the existing field configuration. Continue?",
+            yes_button | no_button,
+            no_button,
+        )
+        if response != yes_button:
+            return
+        self._populate_field_columns(self._refresh_fields())
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #
@@ -216,55 +179,8 @@ class LayerConfigDialog(QDialog):
         category_label = self._category_label_edit.text().strip() or None
         label_col = self._label_edit.text().strip() or None
 
-        searchable_columns: list[dict[str, str | bool]] = []
-        for row in range(self._search_table.rowCount()):
-            name_item = self._search_table.item(row, 0)
-            label_item = self._search_table.item(row, 1)
-            name = name_item.text().strip() if name_item else ""
-            if not name:
-                continue
-            label = label_item.text().strip() if label_item else ""
-            type_combo = self._search_table.cellWidget(row, 2)
-            data_type = "varchar"
-            if type_combo is not None and hasattr(type_combo, "currentText"):
-                data_type = type_combo.currentText().strip().lower() or "varchar"
-            # Get "Use Distinct" checkbox value
-            use_distinct_widget = self._search_table.cellWidget(row, 3)
-            use_distinct = False
-            if use_distinct_widget is not None and hasattr(use_distinct_widget, "isChecked"):
-                use_distinct = use_distinct_widget.isChecked()
-            # Get "Filter By" value
-            filter_by_widget = self._search_table.cellWidget(row, 4)
-            filter_by = ""
-            if filter_by_widget is not None and hasattr(filter_by_widget, "text"):
-                filter_by = filter_by_widget.text().strip()
-            col_entry: dict[str, str | bool] = {
-                "name": name,
-                "label": label or name,
-                "type": data_type,
-                "use_distinct": use_distinct,
-            }
-            if filter_by:
-                col_entry["filter_by"] = filter_by
-            searchable_columns.append(col_entry)
-
-        view_columns: list[dict[str, str]] = []
-        for row in range(self._view_table.rowCount()):
-            name_item = self._view_table.item(row, 0)
-            label_item = self._view_table.item(row, 1)
-            name = name_item.text().strip() if name_item else ""
-            if not name:
-                continue
-            label = label_item.text().strip() if label_item else ""
-            type_combo = self._view_table.cellWidget(row, 2)
-            data_type = "varchar"
-            if type_combo is not None and hasattr(type_combo, "currentText"):
-                data_type = type_combo.currentText().strip().lower() or "varchar"
-            view_columns.append({
-                "name": name,
-                "label": label or name,
-                "type": data_type,
-            })
+        field_columns = self._field_columns_from_table()
+        key_column = next((column["name"] for column in field_columns if column["key"]), None)
 
         return LayerConfig(
             datasource_id=self._datasource_id,
@@ -273,44 +189,119 @@ class LayerConfigDialog(QDialog):
             category_label=category_label,
             label_column=label_col,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
-            searchable_columns=searchable_columns,
-            view_columns=view_columns,
+            field_columns=field_columns,
+            key_column=key_column,
         )
 
     # ------------------------------------------------------------------ #
     # Pre-populate                                                        #
     # ------------------------------------------------------------------ #
 
-    def _populate(self, config: LayerConfig) -> None:
+    def _populate(self, config: LayerConfig, available_fields: list[dict[str, str]]) -> None:
         self._layername_edit.setText(config.layername or "")
         self._category_label_edit.setText(config.category_label or "")
         self._label_edit.setText(config.label_column or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
-        self._search_table.setRowCount(0)
-        for col in config.searchable_columns:
-            row = self._search_table.rowCount()
-            self._search_table.insertRow(row)
-            self._search_table.setItem(row, 0, QTableWidgetItem(col.get("name", "")))
-            self._search_table.setItem(row, 1, QTableWidgetItem(col.get("label", "")))
-            self._set_type_combo_at_row(self._search_table, row, col.get("type", "varchar"))
-            # Restore "Use Distinct" checkbox value
-            checkbox = QCheckBox()
-            checkbox.setChecked(bool(col.get("use_distinct", False)))
-            self._search_table.setCellWidget(row, 3, checkbox)
-            # Restore "Filter By" value
-            filter_by_edit = QLineEdit()
+        field_columns = self._merge_field_columns(config.field_columns, available_fields)
+        self._populate_field_columns(field_columns)
+
+    @staticmethod
+    def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
+        runtime = {key: column[key] for key in ("name", "label", "type", "use_distinct", "filter_by") if key in column}
+        return runtime
+
+    @staticmethod
+    def _merge_field_columns(
+        configured_columns: list[dict[str, str | bool]],
+        available_fields: list[dict[str, str]],
+    ) -> list[dict[str, str | bool]]:
+        configured_by_name = {
+            str(column.get("name", "")).casefold(): dict(column)
+            for column in configured_columns
+            if column.get("name")
+        }
+        merged: list[dict[str, str | bool]] = []
+        for position, field in enumerate(available_fields):
+            name = str(field.get("name", "")).strip()
+            if not name:
+                continue
+            column = configured_by_name.pop(name.casefold(), {})
+            merged.append({
+                "name": name,
+                "label": str(column.get("label", field.get("label", name))),
+                "type": str(column.get("type", field.get("type", "varchar"))),
+                "position": position,
+                "search": bool(column.get("search", False)),
+                "export": bool(column.get("export", False)),
+                "key": bool(column.get("key", False)),
+                "use_distinct": bool(column.get("use_distinct", False)),
+                **({"filter_by": str(column["filter_by"])} if column.get("filter_by") else {}),
+            })
+        return merged or list(configured_by_name.values())
+
+    def _populate_field_columns(self, columns: list[dict[str, str | bool]]) -> None:
+        ordered = sorted(
+            enumerate(columns),
+            key=lambda value: (
+                not any(bool(value[1].get(key, False)) for key in ("search", "export", "key")),
+                int(value[1].get("position", value[0])),
+            ),
+        )
+        self._fields_table.setRowCount(0)
+        self._field_positions = {}
+        for fallback_position, column in ordered:
+            row = self._fields_table.rowCount()
+            self._fields_table.insertRow(row)
+            name = str(column.get("name", ""))
+            name_item = QTableWidgetItem(name)
+            self._field_positions[row] = int(column.get("position", fallback_position))
+            self._fields_table.setItem(row, 0, name_item)
+            self._fields_table.setItem(row, 1, QTableWidgetItem(str(column.get("label", name))))
+            self._set_type_combo_at_row(self._fields_table, row, str(column.get("type", "varchar")))
+            for index, key in ((3, "search"), (4, "export"), (5, "key"), (6, "use_distinct")):
+                checkbox = QCheckBox()
+                checkbox.setChecked(bool(column.get(key, False)))
+                self._fields_table.setCellWidget(row, index, checkbox)
+                if key == "key":
+                    checkbox.toggled.connect(
+                        lambda checked, current_row=row: self._on_key_column_toggled(current_row, checked)
+                    )
+            filter_by_edit = QLineEdit(str(column.get("filter_by", "") or ""))
             filter_by_edit.setPlaceholderText("parent field name (optional)")
             filter_by_edit.setClearButtonEnabled(True)
-            filter_by_edit.setText(col.get("filter_by", "") or "")
-            self._search_table.setCellWidget(row, 4, filter_by_edit)
+            self._fields_table.setCellWidget(row, 7, filter_by_edit)
 
-        self._view_table.setRowCount(0)
-        for col in config.view_columns:
-            row = self._view_table.rowCount()
-            self._view_table.insertRow(row)
-            self._view_table.setItem(row, 0, QTableWidgetItem(col.get("name", "")))
-            self._view_table.setItem(row, 1, QTableWidgetItem(col.get("label", "")))
-            self._set_type_combo_at_row(self._view_table, row, col.get("type", "varchar"))
+    def _on_key_column_toggled(self, selected_row: int, checked: bool) -> None:
+        if not checked:
+            return
+        for row in range(self._fields_table.rowCount()):
+            if row != selected_row:
+                self._fields_table.cellWidget(row, 5).setChecked(False)
+
+    def _field_columns_from_table(self) -> list[dict[str, str | bool]]:
+        columns: list[dict[str, str | bool]] = []
+        for row in range(self._fields_table.rowCount()):
+            name_item = self._fields_table.item(row, 0)
+            label_item = self._fields_table.item(row, 1)
+            name = name_item.text().strip() if name_item else ""
+            if not name:
+                continue
+            type_combo = self._fields_table.cellWidget(row, 2)
+            filter_by_edit = self._fields_table.cellWidget(row, 7)
+            entry: dict[str, str | bool] = {
+                "name": name,
+                "label": label_item.text().strip() if label_item and label_item.text().strip() else name,
+                "type": type_combo.currentText().strip().lower() if type_combo else "varchar",
+                "search": bool(self._fields_table.cellWidget(row, 3).isChecked()),
+                "export": bool(self._fields_table.cellWidget(row, 4).isChecked()),
+                "key": bool(self._fields_table.cellWidget(row, 5).isChecked()),
+                "use_distinct": bool(self._fields_table.cellWidget(row, 6).isChecked()),
+                "position": self._field_positions.get(row, row),
+            }
+            if filter_by_edit and filter_by_edit.text().strip():
+                entry["filter_by"] = filter_by_edit.text().strip()
+            columns.append(entry)
+        return columns
 
     def _set_type_combo_at_row(self, table, row: int, value: str) -> None:
         combo = QComboBox()

@@ -59,7 +59,7 @@ class KmlConnector(BaseConnector):
                 return layer
         raise LayerLoadException(f"KML layer '{layer_name}' not found.")
 
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
         metadata = self.get_layer_metadata(layer_name)

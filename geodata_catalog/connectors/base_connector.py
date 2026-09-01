@@ -18,7 +18,7 @@ class BaseConnector(ABC):
         """Return metadata for a specific layer."""
 
     @abstractmethod
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         """Create and return a QgsVectorLayer instance."""
 
     @abstractmethod

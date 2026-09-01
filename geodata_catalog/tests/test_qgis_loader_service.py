@@ -42,7 +42,7 @@ class FakeConnector:
     def __init__(self, layer):
         self._layer = layer
 
-    def load_layer(self, layer_name):
+    def load_layer(self, layer_name, key_column=None):
         return self._layer
 
 

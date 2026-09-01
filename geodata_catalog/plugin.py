@@ -265,6 +265,11 @@ class GeoDataCatalogPlugin:
                     lambda _checked=False: self._layer_toolbox_service.apply_flight_level_range_rules(layer)
                 )
                 group_menu.addAction(flight_level_action)
+                preset_grouping_action = QAction("Flight Level Presets", group_menu)
+                preset_grouping_action.triggered.connect(
+                    lambda _checked=False: self._apply_flight_level_preset_grouping(layer)
+                )
+                group_menu.addAction(preset_grouping_action)
         else:
             placeholder = QAction("(no configured fields)", group_menu)
             placeholder.setEnabled(False)
@@ -272,6 +277,14 @@ class GeoDataCatalogPlugin:
 
         geo_menu.addMenu(group_menu)
         return geo_menu
+
+    def _apply_flight_level_preset_grouping(self, layer) -> bool:
+        try:
+            presets = self._system_configuration_repository.load_flight_level_presets()
+        except Exception as exc:
+            self._logger.warning(f"Unable to load flight-level presets for grouping: {exc}")
+            presets = DEFAULT_FLIGHT_LEVEL_PRESETS
+        return self._layer_toolbox_service.apply_flight_level_preset_rules(layer, presets)
 
     def _supports_vertices_actions(self, layer) -> bool:
         if layer is None or self._layer_toolbox_service is None:
@@ -449,6 +462,7 @@ class GeoDataCatalogPlugin:
             connector = self._datasource_service.get_connector(datasource)
             layer_definition = self._resolve_layer(datasource_id, layer_name)
             self._loader_service.load_layer(layer_definition, connector)
+            self._layer_toolbox_service.ensure_default_basemap_for_empty_project()
             self._loaded_layer_keys.add(layer_definition.key())
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
@@ -464,6 +478,8 @@ class GeoDataCatalogPlugin:
             layer_name=layer_name,
             display_name=layer_def.display_name,
             existing_config=existing_config,
+            available_fields=self._discover_layer_fields(datasource_id, layer_name),
+            refresh_fields=lambda: self._discover_layer_fields(datasource_id, layer_name),
         )
         if self._run_dialog(dialog) != self._accepted_code(dialog):
             return
@@ -478,6 +494,33 @@ class GeoDataCatalogPlugin:
             f"enable_fl_filter={config.enable_fl_filter}, "
             f"searchable_columns={config.searchable_columns}"
         )
+
+    def _discover_layer_fields(self, datasource_id: str, layer_name: str) -> list[dict[str, str]]:
+        """Read the field schema from a connector without adding the layer to the project."""
+        try:
+            datasource = self._datasource_service.get_datasource(datasource_id)
+            connector = self._datasource_service.get_connector(datasource)
+            get_layer_fields = getattr(connector, "get_layer_fields", None)
+            if callable(get_layer_fields):
+                return get_layer_fields(layer_name)
+            layer = connector.load_layer(layer_name)
+            fields = layer.fields()
+            result: list[dict[str, str]] = []
+            for position, field in enumerate(fields):
+                type_name = str(field.typeName() if hasattr(field, "typeName") else "varchar")
+                data_type = "numeric" if type_name.casefold() in {
+                    "int", "integer", "long", "double", "real", "numeric", "decimal", "float"
+                } else "varchar"
+                result.append({
+                    "name": str(field.name()),
+                    "label": str(field.name()),
+                    "type": data_type,
+                    "position": position,
+                })
+            return result
+        except Exception as exc:
+            self._logger.warning(f"Failed to read fields for layer '{layer_name}': {exc}")
+            return []
 
     def _on_open_layer_filter(self) -> None:
         layer = self._active_layer()
@@ -590,10 +633,9 @@ class GeoDataCatalogPlugin:
 
     def _resolve_view_columns(self, qgis_layer, layer_def: LayerDefinition | None) -> list[dict[str, str]]:
         if layer_def is not None:
-            configured = layer_def.metadata.get("view_columns", []) or []
-            normalized = [c for c in configured if c.get("name")]
-            if normalized:
-                return normalized
+            if "view_columns" in layer_def.metadata:
+                configured = layer_def.metadata["view_columns"] or []
+                return [c for c in configured if c.get("name")]
 
         if not hasattr(qgis_layer, "fields"):
             return []

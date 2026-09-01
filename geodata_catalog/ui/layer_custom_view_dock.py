@@ -581,7 +581,7 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.itemChanged.connect(self._on_item_changed)
 
         self._table.setColumnWidth(0, 28)
-        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.horizontalHeader().setStretchLastSection(False)
         self._root.addWidget(self._table)
 
     def _apply_theme(self) -> None:
@@ -1270,24 +1270,45 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.setRowCount(len(self._current_records))
 
         for row_idx, record in enumerate(self._current_records):
+            fid = self._current_fids[row_idx]
+            is_highlighted = fid in self._checked_fids
             check_item = QTableWidgetItem("")
             check_item.setFlags(
                 _ITEM_FLAGS["enabled"] | _ITEM_FLAGS["checkable"] | _ITEM_FLAGS["selectable"]
             )
-            fid = self._current_fids[row_idx]
             check_item.setCheckState(_ITEM_FLAGS["checked"] if fid in self._checked_fids else _ITEM_FLAGS["unchecked"])
             check_item.setData(_ITEM_FLAGS["user_role"], fid)
+            self._apply_record_highlight(check_item, is_highlighted)
             self._table.setItem(row_idx, 0, check_item)
 
             for col_idx, col in enumerate(self._columns, start=1):
                 key = col["name"]
                 value = record.get(key, "")
-                item = QTableWidgetItem("" if value is None else str(value))
+                item = QTableWidgetItem(self._format_record_value(key, value))
                 item.setFlags(_ITEM_FLAGS["enabled"] | _ITEM_FLAGS["selectable"])
+                self._apply_record_highlight(item, is_highlighted)
                 self._table.setItem(row_idx, col_idx, item)
 
         self._table.blockSignals(False)
         self._updating_table = False
+
+    @staticmethod
+    def _apply_record_highlight(item, is_highlighted: bool) -> None:
+        if is_highlighted and QColor is not None:
+            item.setBackground(QColor("#FFF3BF"))
+
+    @staticmethod
+    def _format_record_value(column_name: str, value: object) -> str:
+        if value is None:
+            return ""
+        if str(column_name).casefold() in {"fl_lower", "fl_upper"}:
+            try:
+                numeric_value = float(value)
+                if numeric_value.is_integer():
+                    return str(int(numeric_value))
+            except (TypeError, ValueError):
+                pass
+        return str(value)
 
     def _on_item_changed(self, item) -> None:
         if self._updating_table:
@@ -1303,6 +1324,7 @@ class LayerCustomViewWindow(QMainWindow):
         else:
             self._checked_fids.discard(fid)
         self._update_map_selection()
+        self._fill_table()
 
     def _on_record_cell_clicked(self, row: int, column: int) -> None:
         if column == 0 or not 0 <= row < len(self._current_fids):
@@ -1315,6 +1337,7 @@ class LayerCustomViewWindow(QMainWindow):
         else:
             self._checked_fids.add(fid)
         self._update_map_selection()
+        self._fill_table()
 
     def _update_map_selection(self) -> None:
         if self._layer is None:
@@ -1518,6 +1541,16 @@ class LayerCustomViewWindow(QMainWindow):
         options.fileEncoding = "UTF-8"
         options.onlySelectedFeatures = True
         options.layerName = str(getattr(self._layer, "name", lambda: "selected_records")())
+        if hasattr(self._layer, "fields"):
+            try:
+                field_indexes = [
+                    self._layer.fields().indexOf(column["name"])
+                    for column in self._columns
+                    if self._layer.fields().indexOf(column["name"]) >= 0
+                ]
+                options.attributes = field_indexes
+            except Exception:
+                pass
 
         previous_selected_ids: list[int] = []
         if hasattr(self._layer, "selectedFeatureIds"):

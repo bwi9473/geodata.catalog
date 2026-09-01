@@ -77,14 +77,51 @@ class OracleConnector(BaseConnector):
                 return layer
         raise LayerLoadException(f"Oracle layer '{layer_name}' not found.")
 
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
         metadata = self.get_layer_metadata(layer_name)
-        layer = QgsVectorLayer(metadata.provider_uri, metadata.display_name, metadata.provider_key)
+        configured_key = str(key_column or "").strip()
+        if configured_key and not self._is_safe_identifier(configured_key):
+            raise LayerLoadException(f"Invalid Oracle key column '{configured_key}'.")
+        uri = self._build_layer_uri(
+            metadata.owner or "",
+            metadata.object_name or "",
+            metadata.geometry_column or "",
+            configured_key,
+        )
+        layer = QgsVectorLayer(uri, metadata.display_name, metadata.provider_key)
         if not layer.isValid():
             raise LayerLoadException(f"Invalid Oracle layer '{metadata.display_name}'.")
         return layer
+
+    def get_layer_fields(self, layer_name: str) -> list[dict[str, str | int]]:
+        """Return table or view attributes without requiring a QGIS provider key."""
+        metadata = self.get_layer_metadata(layer_name)
+        owner = metadata.owner or ""
+        object_name = metadata.object_name or ""
+        if not self._is_safe_identifier(owner) or not self._is_safe_identifier(object_name):
+            raise LayerLoadException(f"Invalid Oracle layer name '{layer_name}'.")
+        query = """
+            SELECT column_name, data_type, column_id
+            FROM all_tab_columns
+            WHERE owner = :owner
+              AND table_name = :object_name
+              AND data_type <> 'SDO_GEOMETRY'
+            ORDER BY column_id
+        """
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query, {"owner": owner, "object_name": object_name})
+                return [
+                    {
+                        "name": str(column_name),
+                        "label": str(column_name),
+                        "type": self._field_type_category(str(data_type)),
+                        "position": int(position),
+                    }
+                    for column_name, data_type, position in cursor.fetchall()
+                ]
 
     def test_connection(self) -> bool:
         with self._connect() as connection:
@@ -92,6 +129,14 @@ class OracleConnector(BaseConnector):
                 cursor.execute("SELECT 1 FROM dual")
                 _ = cursor.fetchone()
         return True
+
+    @staticmethod
+    def _field_type_category(data_type: str) -> str:
+        return (
+            "numeric"
+            if data_type.upper() in {"NUMBER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE", "INTEGER", "DECIMAL"}
+            else "varchar"
+        )
 
     def _discover_spatial_objects(self) -> list[tuple[Any, ...]]:
         owner_filter = self._config.get("schema")
@@ -152,7 +197,13 @@ class OracleConnector(BaseConnector):
                 except Exception:
                     return None
 
-    def _build_layer_uri(self, owner: str, object_name: str, geometry_column: str) -> str:
+    def _build_layer_uri(
+        self,
+        owner: str,
+        object_name: str,
+        geometry_column: str,
+        key_column: str | None = None,
+    ) -> str:
         if QgsDataSourceUri is None:
             return ""
         uri = QgsDataSourceUri()
@@ -163,7 +214,13 @@ class OracleConnector(BaseConnector):
             self._config.get("username", ""),
             self._config.get("password", ""),
         )
-        uri.setDataSource(owner, object_name, geometry_column, "", self._config.get("key_column", ""))
+        uri.setDataSource(
+            owner,
+            object_name,
+            geometry_column,
+            "",
+            key_column or self._config.get("key_column", ""),
+        )
         return uri.uri(False)
 
     def _connect(self):

@@ -41,7 +41,10 @@ class QgisLoaderService:
             f"uri: {layer_definition.provider_uri})"
         )
         try:
-            layer = connector.load_layer(layer_definition.layer_name)
+            layer = connector.load_layer(
+                layer_definition.layer_name,
+                key_column=layer_definition.metadata.get("key_column"),
+            )
         except Exception as exc:
             self._logger.error(
                 f"Connector failed to load layer '{layer_definition.display_name}': {exc}"
@@ -133,5 +136,8 @@ class QgisLoaderService:
         try:
             layer.setCustomProperty("geodata_catalog/datasource_id", layer_definition.datasource_id)
             layer.setCustomProperty("geodata_catalog/source_layer_name", layer_definition.layer_name)
+            layer.setCustomProperty(
+                "geodata_catalog/key_column", layer_definition.metadata.get("key_column")
+            )
         except Exception as exc:
             self._logger.warning(f"Could not tag layer source properties: {exc}")

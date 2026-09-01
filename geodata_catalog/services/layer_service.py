@@ -62,10 +62,9 @@ class LayerService:
                 if layer_config.label_column is not None:
                     layer.label_column = layer_config.label_column
                 layer.metadata["enable_fl_filter"] = bool(layer_config.enable_fl_filter)
-                if layer_config.searchable_columns:
-                    layer.searchable_columns = layer_config.searchable_columns
-                if layer_config.view_columns:
-                    layer.metadata["view_columns"] = layer_config.view_columns
+                layer.searchable_columns = layer_config.searchable_columns
+                layer.metadata["view_columns"] = layer_config.view_columns
+                layer.metadata["key_column"] = layer_config.key_column
 
             merged.append(layer)
 
