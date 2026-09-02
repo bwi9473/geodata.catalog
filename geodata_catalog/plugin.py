@@ -28,9 +28,10 @@ from geodata_catalog.ui.datasource_dialog import DatasourceDialog
 from geodata_catalog.ui.geometry_toolbar import GeometryToolbar
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
+from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QAction, QMenu, QMessageBox
+from qgis.PyQt.QtWidgets import QAction, QApplication, QMenu, QMessageBox
 
 try:
     from qgis.core import QgsMapLayerType
@@ -76,11 +77,16 @@ class GeoDataCatalogPlugin:
 
         self._open_catalog_action: QAction | None = None
         self._dock_widget: CatalogDockWidget | None = None
+        self._loadable_layers_dock: LoadableLayersDockWidget | None = None
         self._layer_cache: dict[str, dict[str, LayerDefinition]] = {}
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
         self._layer_panel_filter_action: QAction | None = None
-        self._geometry_toolbar = GeometryToolbar(self.iface, self._logger)
+        self._geometry_toolbar = GeometryToolbar(
+            self.iface,
+            self._logger,
+            on_loadable_layers_requested=self._show_loadable_layers_dock,
+        )
 
     def initGui(self) -> None:
         try:
@@ -103,6 +109,11 @@ class GeoDataCatalogPlugin:
             self._dock_widget.deleteLater()
             self._dock_widget = None
 
+        if self._loadable_layers_dock is not None:
+            self.iface.removeDockWidget(self._loadable_layers_dock)
+            self._loadable_layers_dock.deleteLater()
+            self._loadable_layers_dock = None
+
         if self._open_catalog_action is not None:
             self.iface.removePluginMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
             self._open_catalog_action = None
@@ -116,27 +127,128 @@ class GeoDataCatalogPlugin:
             self._dock_widget.edit_source_requested.connect(self._on_edit_source)
             self._dock_widget.delete_source_requested.connect(self._on_delete_source)
             self._dock_widget.refresh_requested.connect(self._on_refresh_source)
-            self._dock_widget.show_all_layers_toggled.connect(self._on_show_all_layers_toggled)
-            self._dock_widget.load_layer_requested.connect(self._on_load_layer)
             self._dock_widget.edit_layer_config_requested.connect(self._on_edit_layer_config)
-            self._dock_widget.basemap_selected.connect(self._on_basemap_selected)
-            self._dock_widget.focus_muac_requested.connect(self._on_focus_muac_requested)
             self.iface.addDockWidget(self._dock_area(), self._dock_widget)
             self._try_tabify_with_core_docks(self._dock_widget)
         self._dock_widget.show()
-        self._dock_widget.set_basemap_options(
+        self._refresh_datasources()
+        self._ensure_layer_panel_filter_action()
+
+    def _show_loadable_layers_dock(self) -> None:
+        if self._loadable_layers_dock is None:
+            self._loadable_layers_dock = LoadableLayersDockWidget(self.iface.mainWindow())
+            self._loadable_layers_dock.load_layer_requested.connect(self._on_load_layer)
+            self._loadable_layers_dock.basemap_selected.connect(self._on_basemap_selected)
+            self._configure_as_floating_window(self._loadable_layers_dock)
+        self._apply_configured_theme(self._loadable_layers_dock)
+        self._size_data_panel_window(self._loadable_layers_dock)
+        self._loadable_layers_dock.show()
+        self._loadable_layers_dock.raise_()
+        self._loadable_layers_dock.activateWindow()
+        self._center_on_map_canvas(self._loadable_layers_dock)
+        self._loadable_layers_dock.set_basemap_options(
             self._layer_toolbox_service.list_basemap_options(),
             self._layer_toolbox_service.current_basemap_name(),
         )
-        self._refresh_datasources()
-        self._ensure_layer_panel_filter_action()
+        self._refresh_all_layers_view()
+
+    def _configure_as_floating_window(self, dock_widget) -> None:
+        if hasattr(dock_widget, "setFloating"):
+            dock_widget.setFloating(True)
+
+        no_dock_area = getattr(Qt, "NoDockWidgetArea", None)
+        if no_dock_area is None:
+            dock_widget_area = getattr(Qt, "DockWidgetArea", None)
+            if dock_widget_area is not None:
+                no_dock_area = getattr(dock_widget_area, "NoDockWidgetArea", None)
+        if no_dock_area is not None and hasattr(dock_widget, "setAllowedAreas"):
+            dock_widget.setAllowedAreas(no_dock_area)
+
+    def _size_data_panel_window(self, widget) -> None:
+        if not hasattr(widget, "resize"):
+            return
+        available_geometry = self._available_screen_geometry(widget)
+        target_geometry = self._data_panel_target_geometry()
+        target_width = target_geometry.width() if target_geometry is not None else available_geometry.width()
+        target_height = target_geometry.height() if target_geometry is not None else available_geometry.height()
+
+        width = max(460, min(640, int(target_width * 0.34)))
+        height = max(620, min(820, int(target_height * 0.82)))
+        width = min(width, max(320, available_geometry.width() - 48))
+        height = min(height, max(420, available_geometry.height() - 48))
+
+        if hasattr(widget, "setMinimumSize"):
+            widget.setMinimumSize(380, 520)
+        widget.resize(width, height)
+
+    def _center_on_map_canvas(self, widget) -> None:
+        if not hasattr(widget, "move"):
+            return
+        target_geometry = self._data_panel_target_geometry()
+        if target_geometry is None:
+            target_geometry = self.iface.mainWindow().frameGeometry()
+        available_geometry = self._available_screen_geometry(widget)
+        try:
+            widget_geometry = widget.frameGeometry()
+            target_center = target_geometry.center()
+            margin = 12
+            x = target_center.x() - widget_geometry.width() // 2
+            y = target_center.y() - widget_geometry.height() // 2
+            x = max(available_geometry.left() + margin, min(x, available_geometry.right() - widget_geometry.width() - margin))
+            y = max(available_geometry.top() + margin, min(y, available_geometry.bottom() - widget_geometry.height() - margin))
+            widget.move(x, y)
+        except Exception as exc:
+            self._logger.warning(f"Failed to center Data Panel window: {exc}")
+
+    def _data_panel_target_geometry(self):
+        canvas = self.iface.mapCanvas() if self.iface is not None and hasattr(self.iface, "mapCanvas") else None
+        if canvas is not None and hasattr(canvas, "rect") and hasattr(canvas, "mapToGlobal"):
+            try:
+                rect = canvas.rect()
+                top_left = canvas.mapToGlobal(rect.topLeft())
+                rect.moveTopLeft(top_left)
+                return rect
+            except Exception:
+                pass
+
+        main_window = self.iface.mainWindow() if self.iface is not None else None
+        if main_window is not None and hasattr(main_window, "frameGeometry"):
+            return main_window.frameGeometry()
+        return None
+
+    def _available_screen_geometry(self, widget):
+        screen = widget.screen() if hasattr(widget, "screen") else None
+        if screen is None:
+            main_window = self.iface.mainWindow() if self.iface is not None else None
+            screen = main_window.screen() if main_window is not None and hasattr(main_window, "screen") else None
+        if screen is None and QApplication is not None:
+            screen = QApplication.primaryScreen()
+        if screen is not None and hasattr(screen, "availableGeometry"):
+            return screen.availableGeometry()
+        main_window = self.iface.mainWindow() if self.iface is not None else None
+        return main_window.frameGeometry()
+
+    def _load_ui_colors(self) -> dict[str, str]:
+        try:
+            return self._system_configuration_repository.load_ui_colors()
+        except Exception as exc:
+            self._logger.error(f"Failed to load UI colors from system configuration: {exc}")
+            return DEFAULT_UI_COLORS
+
+    def _apply_configured_theme(self, widget) -> None:
+        apply_theme = getattr(widget, "apply_theme", None)
+        if callable(apply_theme):
+            apply_theme(self._load_ui_colors())
 
     def _on_basemap_selected(self, basemap_name: str) -> None:
         if not basemap_name:
             return
         self._layer_toolbox_service.set_basemap(basemap_name)
-        if self._dock_widget is not None:
-            self._dock_widget.set_selected_basemap(self._layer_toolbox_service.current_basemap_name())
+        if self._loadable_layers_dock is not None:
+            self._loadable_layers_dock.set_basemap_options(
+                self._layer_toolbox_service.list_basemap_options(),
+                self._layer_toolbox_service.current_basemap_name(),
+            )
 
     def _on_focus_muac_requested(self) -> None:
         self._layer_toolbox_service.focus_muac_on_canvas(self.iface)
@@ -312,7 +424,7 @@ class GeoDataCatalogPlugin:
             return
         datasources = self._datasource_service.list_datasources()
         self._dock_widget.set_datasources(datasources)
-        if self._dock_widget.is_show_all_layers_enabled():
+        if self._loadable_layers_dock is not None:
             self._refresh_all_layers_view()
 
     def _on_add_source(self) -> None:
@@ -401,7 +513,7 @@ class GeoDataCatalogPlugin:
 
     def _refresh_all_layers_view(self) -> None:
         """Build a combined list of loadable layers from all datasources."""
-        if self._dock_widget is None:
+        if self._loadable_layers_dock is None:
             return
         rows: list[dict[str, str | LayerDefinition]] = []
         try:
@@ -448,7 +560,7 @@ class GeoDataCatalogPlugin:
                     str((r.get("layer") or LayerDefinition("", "", "", "", "")).display_name).casefold(),
                 )
             )
-            self._dock_widget.set_all_layers(rows)
+            self._loadable_layers_dock.set_rows(rows, self._loaded_layer_keys, "#2777B5")
             self._logger.info(f"All-layers view refreshed with {len(rows)} loadable layers")
         except GeoDataCatalogException as exc:
             self._show_error("Refresh All Layers", str(exc))
@@ -464,6 +576,8 @@ class GeoDataCatalogPlugin:
             self._loader_service.load_layer(layer_definition, connector)
             self._layer_toolbox_service.ensure_default_basemap_for_empty_project()
             self._loaded_layer_keys.add(layer_definition.key())
+            if self._loadable_layers_dock is not None:
+                self._loadable_layers_dock.refresh_loaded_state(self._loaded_layer_keys)
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
 
@@ -609,11 +723,7 @@ class GeoDataCatalogPlugin:
         except Exception as exc:
             self._logger.error(f"Failed to load flight level presets from system configuration: {exc}")
 
-        ui_colors = DEFAULT_UI_COLORS
-        try:
-            ui_colors = self._system_configuration_repository.load_ui_colors()
-        except Exception as exc:
-            self._logger.error(f"Failed to load UI colors from system configuration: {exc}")
+        ui_colors = self._load_ui_colors()
 
         distinct_values: dict[str, list[str]] = {}
         filtered_distinct_values: dict[str, dict[str, list[str]]] = {}

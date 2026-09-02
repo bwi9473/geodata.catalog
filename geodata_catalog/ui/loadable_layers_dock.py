@@ -1,45 +1,25 @@
 from __future__ import annotations
 
-from typing import Any
-
 from geodata_catalog.models.layer_definition import LayerDefinition
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtGui import QColor, QIcon
 from qgis.PyQt.QtWidgets import (
+    QComboBox,
     QDockWidget,
+    QFrame,
+    QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QLineEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 
 
 USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
-
-
-def _resolve_no_item_flags():
-    no_item_flags = getattr(Qt, "NoItemFlags", None)
-    if no_item_flags is not None:
-        return no_item_flags
-
-    item_flag_enum = getattr(Qt, "ItemFlag", None)
-    if item_flag_enum is not None:
-        no_item_flags = getattr(item_flag_enum, "NoItemFlags", None)
-        if no_item_flags is not None:
-            return no_item_flags
-
-    item_flags_type = getattr(Qt, "ItemFlags", None)
-    if callable(item_flags_type):
-        try:
-            return item_flags_type()
-        except Exception:
-            return None
-
-    return None
-
-
-_NO_ITEM_FLAGS = _resolve_no_item_flags()
 
 
 def _display_category_label(raw_value: str) -> str:
@@ -52,41 +32,97 @@ def _display_category_label(raw_value: str) -> str:
 
 
 class LoadableLayersDockWidget(QDockWidget):
-    """Transparent dock that shows all loadable layers with load state indicators."""
+    """Dock for selecting visible catalog layers and the active basemap."""
 
     load_layer_requested = pyqtSignal(str, str)
+    basemap_selected = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
-        super().__init__("GeoData Catalog Layers", parent)
+        super().__init__("Data Panel", parent)
         self._rows: list[dict[str, str | LayerDefinition]] = []
-        self._active_color = "#59A947"
+        self._updating_tree = False
+        self._updating_basemap = False
+        self._theme_primary = "#59A947"
         self._build_ui()
 
     def _build_ui(self) -> None:
         body = QWidget(self)
         root = QVBoxLayout(body)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setSpacing(7)
 
-        self._hint = QLabel("Double-click a layer to load it.")
-        root.addWidget(self._hint)
+        search_row = QHBoxLayout()
+        search_row.setSpacing(6)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Zoeken in panel...")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self.filter_edit, stretch=1)
+        self.filter_button = QToolButton()
+        self.filter_button.setIcon(QIcon(":/images/themes/default/mActionFilter.svg"))
+        self.filter_button.setToolTip("Alle categorieen in- of uitklappen")
+        self.filter_button.clicked.connect(self._toggle_categories)
+        search_row.addWidget(self.filter_button)
+        root.addLayout(search_row)
 
-        self.layers_list = QListWidget()
-        self.layers_list.itemDoubleClicked.connect(self._on_layer_double_clicked)
-        root.addWidget(self.layers_list, stretch=1)
+        self.layers_tree = QTreeWidget()
+        self.layers_tree.setColumnCount(1)
+        self.layers_tree.setHeaderHidden(True)
+        self.layers_tree.setRootIsDecorated(True)
+        self.layers_tree.setAlternatingRowColors(False)
+        self.layers_tree.setUniformRowHeights(True)
+        self.layers_tree.setIndentation(19)
+        self.layers_tree.itemChanged.connect(self._on_item_changed)
+        root.addWidget(self.layers_tree, stretch=1)
+
+        footer = QFrame()
+        footer.setProperty("basemapFooter", True)
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(8, 8, 8, 8)
+        footer_layout.setSpacing(4)
+        basemap_label = QLabel("BASEMAP")
+        basemap_label.setProperty("sectionLabel", True)
+        footer_layout.addWidget(basemap_label)
+        basemap_row = QHBoxLayout()
+        basemap_row.setSpacing(6)
+        self.basemap_combo = QComboBox()
+        basemap_row.addWidget(self.basemap_combo, stretch=1)
+        self.project_basemap_button = QToolButton()
+        self.project_basemap_button.setIcon(QIcon(":/images/themes/default/mActionAddRasterLayer.svg"))
+        self.project_basemap_button.setToolTip("Projecteer geselecteerde basemap als achtergrond")
+        self.project_basemap_button.clicked.connect(self._on_project_basemap_clicked)
+        basemap_row.addWidget(self.project_basemap_button)
+        footer_layout.addLayout(basemap_row)
+        root.addWidget(footer)
 
         self.setWidget(body)
+        self.setMinimumWidth(280)
 
     def apply_theme(self, ui_colors: dict[str, str]) -> None:
-        self._active_color = str(ui_colors.get("primary", "#59A947"))
+        primary = str(ui_colors.get("primary", "#59A947"))
+        primary_text = str(ui_colors.get("primary_text", "#FFFFFF"))
+        panel_background = str(ui_colors.get("panel_background", "#F7F9FC"))
+        window_background = str(ui_colors.get("window_background", "#FFFFFF"))
         border = str(ui_colors.get("border", "#D7DEE8"))
         text = str(ui_colors.get("text", "#1E293B"))
+        header_background = str(ui_colors.get("header_background", "#EEF3FA"))
+        header_text = str(ui_colors.get("header_text", "#0F172A"))
+        self._theme_primary = primary
         self.setStyleSheet(
             "\n".join(
                 [
-                    f"QDockWidget {{ background: rgba(255, 255, 255, 170); color: {text}; }}",
-                    f"QLabel {{ color: {text}; }}",
-                    f"QListWidget {{ background: rgba(255, 255, 255, 160); border: 1px solid {border}; border-radius: 6px; }}",
+                    f"QDockWidget {{ background: {window_background}; color: {text}; }}",
+                    f"QWidget {{ background: {window_background}; color: {text}; }}",
+                    f"QLineEdit, QComboBox {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
+                    f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {primary}; }}",
+                    f"QToolButton {{ border: 1px solid {border}; border-radius: 4px; background: #FFFFFF; color: {text}; min-width: 30px; min-height: 30px; }}",
+                    f"QToolButton:hover {{ border-color: {primary}; background: {header_background}; color: {header_text}; }}",
+                    f"QTreeWidget {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QTreeWidget::item {{ min-height: 32px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
+                    f"QTreeWidget::item:selected {{ background: {primary}; color: {primary_text}; }}",
+                    f"QTreeWidget::branch:has-children:closed, QTreeWidget::branch:has-children:open {{ color: {primary}; }}",
+                    f"QFrame[basemapFooter='true'] {{ background: {panel_background}; border: 1px solid {border}; border-radius: 4px; }}",
+                    f"QLabel[sectionLabel='true'] {{ color: {primary}; font-size: 10px; font-weight: 700; }}",
                 ]
             )
         )
@@ -95,49 +131,30 @@ class LoadableLayersDockWidget(QDockWidget):
         self,
         rows: list[dict[str, str | LayerDefinition]],
         loaded_layer_keys: set[str],
-        active_color: str,
+        _active_color: str,
     ) -> None:
         self._rows = list(rows)
-        self._active_color = active_color or self._active_color
-        self.layers_list.clear()
-        unavailable_header_added = False
+        self._updating_tree = True
+        self.layers_tree.clear()
         grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
 
         for row in rows:
             datasource_id = str(row.get("datasource_id", ""))
-            source_name = str(row.get("source_name", ""))
-            source_type = str(row.get("source_type", ""))
-            loadable = bool(row.get("loadable", True))
-            availability_reason = str(row.get("availability_reason", "")).strip()
             display_group = str(row.get("business_group", "")).strip()
             category = _display_category_label(display_group)
             layer = row.get("layer")
             if not datasource_id or layer is None or not isinstance(layer, LayerDefinition):
                 continue
-
-            if not loadable and availability_reason and not unavailable_header_added:
-                header_item = QListWidgetItem("Database not available")
-                header_item.setToolTip(
-                    "These layers are visible from configuration, but cannot be loaded right now."
-                )
-                header_font = header_item.font()
-                header_font.setBold(True)
-                header_item.setFont(header_font)
-                if _NO_ITEM_FLAGS is not None:
-                    header_item.setFlags(_NO_ITEM_FLAGS)
-                self.layers_list.addItem(header_item)
-                unavailable_header_added = True
-
             grouped_rows.setdefault(category, []).append(row)
 
         for category in sorted(grouped_rows.keys(), key=str.casefold):
-            category_header = QListWidgetItem(category)
-            category_font = category_header.font()
+            category_item = QTreeWidgetItem([category.upper()])
+            category_item.setIcon(0, QIcon(":/images/themes/default/mActionAddGroup.svg"))
+            category_font = category_item.font(0)
             category_font.setBold(True)
-            category_header.setFont(category_font)
-            if _NO_ITEM_FLAGS is not None:
-                category_header.setFlags(_NO_ITEM_FLAGS)
-            self.layers_list.addItem(category_header)
+            category_item.setFont(0, category_font)
+            category_item.setForeground(0, QColor(self._theme_primary))
+            self.layers_tree.addTopLevelItem(category_item)
 
             category_rows = sorted(
                 grouped_rows[category],
@@ -158,11 +175,11 @@ class LoadableLayersDockWidget(QDockWidget):
 
                 layer_key = layer.key()
                 loaded = layer_key in loaded_layer_keys
-                status_icon = self._build_status_icon(loaded and loadable)
-
-                item = QListWidgetItem(f"  {layer.display_name}  [{source_name}]")
-                item.setData(USER_ROLE, (datasource_id, layer.layer_name, layer_key, loadable))
+                item = QTreeWidgetItem(category_item, [layer.display_name])
+                item.setIcon(0, self._layer_icon(layer))
+                item.setData(0, USER_ROLE, (datasource_id, layer.layer_name, layer_key, loadable))
                 item.setToolTip(
+                    0,
                     f"Category: {category}\n"
                     f"Source: {source_name} ({source_type})\n"
                     f"Layer: {layer.display_name}\n"
@@ -172,71 +189,86 @@ class LoadableLayersDockWidget(QDockWidget):
                     f"Loaded: {'Yes' if loaded else 'No'}"
                 )
                 if not loadable and availability_reason:
-                    item.setToolTip(f"{item.toolTip()}\nReason: {availability_reason}")
-                item.setIcon(status_icon)
-                self.layers_list.addItem(item)
+                    item.setToolTip(0, f"{item.toolTip(0)}\nReason: {availability_reason}")
+                item.setCheckState(0, self._checked_state(loaded))
+                if not loadable:
+                    item.setDisabled(True)
+
+            category_item.setExpanded(True)
+            category_item.setText(0, f"{category.upper()}   ({category_item.childCount()})")
+
+        self._updating_tree = False
+        self._apply_filter(self.filter_edit.text())
 
     def refresh_loaded_state(self, loaded_layer_keys: set[str]) -> None:
-        for index in range(self.layers_list.count()):
-            item = self.layers_list.item(index)
-            payload = item.data(USER_ROLE)
-            if not payload or len(payload) < 3:
-                continue
-            layer_key = str(payload[2])
-            loadable = True if len(payload) < 4 else bool(payload[3])
-            loaded = (layer_key in loaded_layer_keys) and loadable
-            item.setIcon(self._build_status_icon(loaded))
-            tooltip = item.toolTip() or ""
-            if "Loaded:" in tooltip:
-                tooltip = tooltip.rsplit("Loaded:", 1)[0].rstrip() + f"\nLoaded: {'Yes' if loaded else 'No'}"
-            item.setToolTip(tooltip)
+        self._updating_tree = True
+        for index in range(self.layers_tree.topLevelItemCount()):
+            category_item = self.layers_tree.topLevelItem(index)
+            for child_index in range(category_item.childCount()):
+                item = category_item.child(child_index)
+                payload = item.data(0, USER_ROLE)
+                if payload:
+                    item.setCheckState(0, self._checked_state(str(payload[2]) in loaded_layer_keys))
+        self._updating_tree = False
 
-    def _build_status_icon(self, loaded: bool) -> Any:
-        try:
-            from qgis.PyQt.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-        except ImportError:  # pragma: no cover - test fallback
-            try:
-                from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-            except ImportError:  # pragma: no cover
-                return None
+    def set_basemap_options(self, options: list[dict[str, str]], selected_name: str) -> None:
+        self._updating_basemap = True
+        self.basemap_combo.clear()
+        for option in options:
+            name = str(option.get("name", "")).strip()
+            if name:
+                self.basemap_combo.addItem(name, name)
+        index = self.basemap_combo.findData(selected_name)
+        if index >= 0:
+            self.basemap_combo.setCurrentIndex(index)
+        self._updating_basemap = False
 
-        size = 10
-        pix = QPixmap(size, size)
-        transparent = getattr(Qt, "transparent", None)
-        if transparent is not None:
-            pix.fill(transparent)
+    @staticmethod
+    def _checked_state(checked: bool):
+        value = getattr(Qt, "Checked" if checked else "Unchecked", None)
+        if value is not None:
+            return value
+        return getattr(Qt.CheckState, "Checked" if checked else "Unchecked")
 
-        painter = QPainter(pix)
-        antialiasing = getattr(QPainter, "Antialiasing", None)
-        if antialiasing is None:
-            render_hint = getattr(QPainter, "RenderHint", None)
-            if render_hint is not None:
-                antialiasing = getattr(render_hint, "Antialiasing", None)
-        if antialiasing is not None:
-            painter.setRenderHint(antialiasing)
-
-        color = QColor(self._active_color if loaded else "#A8B3C4")
-        pen = QPen(color)
-        pen.setWidth(1)
-        painter.setPen(pen)
-
-        if loaded:
-            painter.setBrush(color)
-        else:
-            no_brush = getattr(Qt, "NoBrush", None)
-            if no_brush is not None:
-                painter.setBrush(no_brush)
-
-        painter.drawEllipse(1, 1, size - 2, size - 2)
-        painter.end()
-        return QIcon(pix)
-
-    def _on_layer_double_clicked(self, item: QListWidgetItem) -> None:
-        payload = item.data(USER_ROLE)
-        if not payload:
+    def _on_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
+        if self._updating_tree or item.childCount():
             return
-        datasource_id, layer_name = payload[0], payload[1]
-        loadable = True if len(payload) < 4 else bool(payload[3])
-        if not loadable:
+        payload = item.data(0, USER_ROLE)
+        if not payload or not bool(payload[3]):
             return
-        self.load_layer_requested.emit(str(datasource_id), str(layer_name))
+        if item.checkState(0) == self._checked_state(True):
+            self.load_layer_requested.emit(str(payload[0]), str(payload[1]))
+
+    def _on_project_basemap_clicked(self) -> None:
+        if not self._updating_basemap:
+            self.basemap_selected.emit(str(self.basemap_combo.currentData() or ""))
+
+    def _toggle_categories(self) -> None:
+        should_expand = any(
+            not self.layers_tree.topLevelItem(index).isExpanded()
+            for index in range(self.layers_tree.topLevelItemCount())
+        )
+        for index in range(self.layers_tree.topLevelItemCount()):
+            self.layers_tree.topLevelItem(index).setExpanded(should_expand)
+
+    @staticmethod
+    def _layer_icon(layer: LayerDefinition) -> QIcon:
+        if (layer.geometry_type or "").casefold() in {"point", "multipoint"}:
+            return QIcon(":/images/themes/default/mIconPointLayer.svg")
+        if (layer.geometry_type or "").casefold() in {"line", "linestring", "multilinestring"}:
+            return QIcon(":/images/themes/default/mIconLineLayer.svg")
+        return QIcon(":/images/themes/default/mIconPolygonLayer.svg")
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.strip().casefold()
+        for index in range(self.layers_tree.topLevelItemCount()):
+            category_item = self.layers_tree.topLevelItem(index)
+            visible_children = 0
+            for child_index in range(category_item.childCount()):
+                item = category_item.child(child_index)
+                visible = not needle or needle in item.text(0).casefold() or needle in item.toolTip(0).casefold()
+                item.setHidden(not visible)
+                visible_children += int(visible)
+            category_item.setHidden(visible_children == 0)
+            if needle and visible_children:
+                category_item.setExpanded(True)

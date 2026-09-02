@@ -5,10 +5,7 @@ from geodata_catalog.models.layer_definition import LayerDefinition
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
-    QCheckBox,
-    QComboBox,
     QDockWidget,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -61,23 +58,18 @@ def _display_category_label(raw_value: str) -> str:
 
 
 class CatalogDockWidget(QDockWidget):
-    """Unified workflow dock for exploring, displaying and analyzing GeoData layers."""
+    """Developer dock for managing datasources and layer configuration."""
 
     add_source_requested = pyqtSignal()
     edit_source_requested = pyqtSignal(str)
     delete_source_requested = pyqtSignal(str)
     refresh_requested = pyqtSignal(str)
-    load_layer_requested = pyqtSignal(str, str)
     edit_layer_config_requested = pyqtSignal(str, str)  # datasource_id, layer_name
-    show_all_layers_toggled = pyqtSignal(bool)
-    basemap_selected = pyqtSignal(str)
-    focus_muac_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__("GeoData Explorer", parent)
         self._datasource_items: dict[str, QTreeWidgetItem] = {}
         self._all_layers_mode = False
-        self._updating_basemap = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -86,11 +78,11 @@ class CatalogDockWidget(QDockWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
 
-        hint = QLabel("One workflow for Explore, Display and Analyze.")
+        hint = QLabel("Manage data sources and configure their layers.")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        explore_group = QGroupBox("Explore")
+        explore_group = QGroupBox("Configuration")
         explore_layout = QVBoxLayout(explore_group)
         explore_layout.setSpacing(8)
 
@@ -105,23 +97,17 @@ class CatalogDockWidget(QDockWidget):
         self.layers_list.customContextMenuRequested.connect(self._on_layers_context_menu)
         explore_layout.addWidget(self.layers_list, stretch=3)
 
-        self.show_all_layers_check = QCheckBox("Show all loadable layers")
-        self.show_all_layers_check.toggled.connect(self._on_show_all_layers_toggled)
-        explore_layout.addWidget(self.show_all_layers_check)
-
         source_buttons = QHBoxLayout()
         self.add_btn = QPushButton("Add Source")
         self.edit_btn = QPushButton("Edit Source")
         self.delete_btn = QPushButton("Delete Source")
         self.refresh_btn = QPushButton("Refresh")
-        self.load_btn = QPushButton("Load")
         self.configure_btn = QPushButton("Configure")
 
         self.add_btn.clicked.connect(self.add_source_requested.emit)
         self.edit_btn.clicked.connect(self._emit_edit)
         self.delete_btn.clicked.connect(self._emit_delete)
         self.refresh_btn.clicked.connect(self._emit_refresh)
-        self.load_btn.clicked.connect(self._emit_load)
         self.configure_btn.clicked.connect(self._emit_edit_layer_config)
 
         source_buttons.addWidget(self.add_btn)
@@ -131,58 +117,12 @@ class CatalogDockWidget(QDockWidget):
         explore_layout.addLayout(source_buttons)
 
         layer_buttons = QHBoxLayout()
-        layer_buttons.addWidget(self.load_btn)
         layer_buttons.addWidget(self.configure_btn)
         explore_layout.addLayout(layer_buttons)
 
         root.addWidget(explore_group)
 
-        display_group = QGroupBox("Display")
-        display_layout = QFormLayout(display_group)
-        display_layout.setContentsMargins(8, 8, 8, 8)
-        display_layout.setSpacing(8)
-
-        self.basemap_combo = QComboBox()
-        self.show_basemap_btn = QPushButton("Show Map")
-        self.show_basemap_btn.clicked.connect(self._emit_selected_basemap)
-        display_layout.addRow("Map", self.basemap_combo)
-
-        self.focus_muac_btn = QPushButton("Focus MUAC")
-        self.focus_muac_btn.clicked.connect(self.focus_muac_requested.emit)
-        map_tools = QHBoxLayout()
-        map_tools.addWidget(self.focus_muac_btn)
-        map_tools.addWidget(self.show_basemap_btn)
-        display_layout.addRow("Map Tools", map_tools)
-
-        root.addWidget(display_group)
-
         self.setWidget(body)
-
-    def set_basemap_options(self, options: list[dict[str, str]], selected_name: str) -> None:
-        self._updating_basemap = True
-        try:
-            self.basemap_combo.clear()
-            for option in options:
-                name = str(option.get("name", "")).strip()
-                if not name:
-                    continue
-                self.basemap_combo.addItem(name, name)
-
-            self.set_selected_basemap(selected_name)
-        finally:
-            self._updating_basemap = False
-
-    def set_selected_basemap(self, basemap_name: str) -> None:
-        if not basemap_name:
-            return
-        index = self.basemap_combo.findData(basemap_name)
-        if index < 0:
-            return
-        self._updating_basemap = True
-        try:
-            self.basemap_combo.setCurrentIndex(index)
-        finally:
-            self._updating_basemap = False
 
     def set_datasources(self, datasources: list[Datasource]) -> None:
         self.datasource_tree.clear()
@@ -220,8 +160,7 @@ class CatalogDockWidget(QDockWidget):
         self.datasource_tree.expandAll()
 
     def set_layers(self, datasource_id: str, layers: list[LayerDefinition]) -> None:
-        if self._all_layers_mode:
-            return
+        self._all_layers_mode = False
         self.layers_list.clear()
         grouped_layers: dict[str, list[LayerDefinition]] = {}
         for layer in layers:
@@ -249,6 +188,7 @@ class CatalogDockWidget(QDockWidget):
 
     def set_all_layers(self, rows: list[dict[str, str | LayerDefinition]]) -> None:
         """Render one combined list with loadable layers from all datasources."""
+        self._all_layers_mode = True
         self.layers_list.clear()
         unavailable_header_added = False
         grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
@@ -339,10 +279,6 @@ class CatalogDockWidget(QDockWidget):
         if datasource_id:
             self.refresh_requested.emit(datasource_id)
 
-    def _on_show_all_layers_toggled(self, checked: bool) -> None:
-        self._all_layers_mode = checked
-        self.show_all_layers_toggled.emit(checked)
-
     def _emit_edit(self) -> None:
         datasource_id = self.selected_datasource_id()
         if datasource_id:
@@ -358,19 +294,6 @@ class CatalogDockWidget(QDockWidget):
         if datasource_id:
             self.refresh_requested.emit(datasource_id)
 
-    def _emit_load(self) -> None:
-        item = self.layers_list.currentItem()
-        if item is None:
-            return
-        payload = item.data(USER_ROLE)
-        if not payload or len(payload) < 2:
-            return
-        datasource_id, layer_name = payload[0], payload[1]
-        loadable = True if len(payload) < 3 else bool(payload[2])
-        if not loadable:
-            return
-        self.load_layer_requested.emit(datasource_id, layer_name)
-
     def _emit_edit_layer_config(self) -> None:
         item = self.layers_list.currentItem()
         if item is None:
@@ -381,21 +304,12 @@ class CatalogDockWidget(QDockWidget):
         datasource_id, layer_name = payload[0], payload[1]
         self.edit_layer_config_requested.emit(datasource_id, layer_name)
 
-    def _emit_selected_basemap(self) -> None:
-        name = str(self.basemap_combo.currentData() or "").strip()
-        if not name:
-            return
-        self.basemap_selected.emit(name)
-
     def _on_layer_double_clicked(self, item: QListWidgetItem) -> None:
         payload = item.data(USER_ROLE)
         if not payload or len(payload) < 2:
             return
         datasource_id, layer_name = payload[0], payload[1]
-        loadable = True if len(payload) < 3 else bool(payload[2])
-        if not loadable:
-            return
-        self.load_layer_requested.emit(datasource_id, layer_name)
+        self.edit_layer_config_requested.emit(datasource_id, layer_name)
 
     def _on_layers_context_menu(self, pos) -> None:
         item = self.layers_list.itemAt(pos)
@@ -407,12 +321,7 @@ class CatalogDockWidget(QDockWidget):
         datasource_id, layer_name = payload[0], payload[1]
         loadable = True if len(payload) < 3 else bool(payload[2])
         menu = QMenu(self)
-        load_action = menu.addAction("Load Layer")
-        load_action.setEnabled(loadable)
-        menu.addSeparator()
         edit_config_action = menu.addAction("Edit Layer Config…")
         chosen = menu.exec(self.layers_list.viewport().mapToGlobal(pos))
-        if chosen == load_action:
-            self.load_layer_requested.emit(datasource_id, layer_name)
-        elif chosen == edit_config_action:
+        if chosen == edit_config_action:
             self.edit_layer_config_requested.emit(datasource_id, layer_name)

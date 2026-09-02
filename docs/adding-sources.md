@@ -376,11 +376,11 @@ This creates three layers: **Active Flights**, **Planned Flights**, and **Histor
 
 ### All loadable layers overview
 
-When you want one quick overview of everything that can be loaded as a layer (file sources and database tables), enable **Show all loadable layers** in the GeoData Catalog panel.
+When you want one quick overview of everything that can be loaded as a layer (file sources and database tables), open the **Data Panel**.
 
-- The existing Layer List switches to an aggregated list across all datasources.
+- The Data Panel opens as a larger separate window centered over the map canvas.
 - Each row still supports double-click to load the layer directly.
-- Disable the option to return to the per-datasource layer list.
+- Close the Data Panel to return to the regular configuration workflow.
 
 ### Edit
 

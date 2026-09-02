@@ -242,7 +242,6 @@ GeoData Catalog panel
 │   └── File Sources
 │       ├── GeoJSON          ← lists GeoJSON datasources
 │       └── KML              ← lists KML datasources
-├── Show all loadable layers  ← aggregated view across all datasources
 ├── Layer List               ← shows layers for selected datasource
 └── Buttons
     ├── Add Source           ← create a new datasource
@@ -264,11 +263,9 @@ GeoData Catalog panel
 
 To see all loadable file sources and database tables in one list:
 
-1. Enable **Show all loadable layers** in the GeoData Catalog panel.
-2. The Layer List switches to one aggregated list across all datasources.
+1. Open the **Data Panel**.
+2. The Data Panel opens as a larger separate window centered over the map canvas with an aggregated list across all datasources.
 3. Double-click any entry to load it directly.
-
-This mode reuses the existing panel (no second window/tab) for minimal UI complexity.
 
 ---
 

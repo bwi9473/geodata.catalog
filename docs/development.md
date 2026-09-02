@@ -53,6 +53,14 @@ pytest --cov=geodata_catalog --cov-report=term-missing geodata_catalog/tests/
 
 Each test module mocks the QGIS runtime so tests can run with plain Python. The patterns used are:
 
+---
+
+## UI Theme Colors
+
+System-wide UI colors are stored in `GeoDataCatalog/system_configuration.json` under `ui_colors` and loaded through `SystemConfigurationRepository.load_ui_colors()`.
+
+New panels, docks, dialogs, or other layout widgets that need configurable colors should expose an `apply_theme(ui_colors: dict[str, str])` method. Create them through `GeoDataCatalogPlugin` and call `_apply_configured_theme(widget)` after construction so they use the same configured palette as the existing Data Panel and custom view window.
+
 ### Faking QGIS layers
 
 ```python

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from geodata_catalog.logging_utils import PluginLogger
 
 try:
@@ -374,12 +376,18 @@ class GeometryToolbar:
 
     OBJECT_NAME = "GeoDataCatalogGeometryToolbar"
     TITLE = "GeoData Geometry Toolbox"
-
-    def __init__(self, iface, logger: PluginLogger) -> None:
+    def __init__(
+        self,
+        iface,
+        logger: PluginLogger,
+        on_loadable_layers_requested: Callable[[], None] | None = None,
+    ) -> None:
         self._iface = iface
         self._logger = logger
+        self._on_loadable_layers_requested = on_loadable_layers_requested
         self._toolbar = None
         self._identify_action: QAction | None = None
+        self._loadable_layers_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
         self._previous_map_tool = None
 
@@ -417,6 +425,15 @@ class GeometryToolbar:
         self._identify_action.toggled.connect(self._on_identify_toggled)
         self._toolbar.addAction(self._identify_action)
 
+        self._loadable_layers_action = QAction(
+            self._loadable_layers_icon(),
+            "Choose map layers",
+            self._iface.mainWindow(),
+        )
+        self._loadable_layers_action.setToolTip("Choose map layers")
+        self._loadable_layers_action.triggered.connect(self._emit_loadable_layers_requested)
+        self._toolbar.addAction(self._loadable_layers_action)
+
         canvas = self._map_canvas()
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
@@ -439,6 +456,7 @@ class GeometryToolbar:
             self._toolbar.deleteLater()
             self._toolbar = None
         self._identify_action = None
+        self._loadable_layers_action = None
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -446,6 +464,17 @@ class GeometryToolbar:
             if not icon.isNull():
                 return icon
         return QIcon(":/images/themes/default/mActionIdentify.svg")
+
+    def _loadable_layers_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionAddLayer.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionAddLayer.svg")
+
+    def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
+        if self._on_loadable_layers_requested is not None:
+            self._on_loadable_layers_requested()
 
     def _map_canvas(self):
         if self._iface is None:
