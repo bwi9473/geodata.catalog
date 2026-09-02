@@ -127,19 +127,14 @@ class LayerToolboxService:
 
         helper_name = f"{layer.name()}{self.VERTEX_SUFFIX}"
         self._remove_helper_layer(layer.id(), "vertices")
-        helper = self._create_memory_layer("Point", helper_name, layer)
+        helper = self._extract_vertices_layer(layer, helper_name)
         if helper is None:
             return
 
         self._tag_helper_layer(helper, layer.id(), "vertices")
-        provider = helper.dataProvider()
-        features = self._build_vertex_features(layer)
-        if features:
-            provider.addFeatures(features)
-            helper.updateExtents()
         self._project.addMapLayer(helper)
         self._logger.info(
-            f"Vertex helper layer created for '{layer.name()}' with {len(features)} vertices."
+            f"Vertex helper layer created for '{layer.name()}' with {helper.featureCount()} vertices."
         )
 
     def set_polygon_vertices_visible(self, layer, visible: bool) -> None:
@@ -820,6 +815,25 @@ class LayerToolboxService:
             self._logger.warning(f"Failed to create helper memory layer '{layer_name}'.")
             return None
         return layer
+
+    def _extract_vertices_layer(self, source_layer, layer_name: str):
+        """Run QGIS's native algorithm to keep helper attributes identical to the toolbox."""
+        try:
+            from processing import run as processing_run
+
+            result = processing_run(
+                "native:extractvertices",
+                {"INPUT": source_layer, "OUTPUT": "memory:"},
+            )
+            output_layer = result.get("OUTPUT")
+            if output_layer is None or not hasattr(output_layer, "isValid") or not output_layer.isValid():
+                self._logger.warning("QGIS Extract Vertices did not produce a valid output layer.")
+                return None
+            output_layer.setName(layer_name)
+            return output_layer
+        except Exception as exc:
+            self._logger.warning(f"Failed to extract vertices with QGIS: {exc}")
+            return None
 
     def _create_interactive_marker_layer(self, canvas):
         if QgsVectorLayer is None:
