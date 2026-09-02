@@ -86,6 +86,7 @@ class GeoDataCatalogPlugin:
             self.iface,
             self._logger,
             on_loadable_layers_requested=self._show_loadable_layers_dock,
+            on_focus_muac_requested=self._on_focus_muac_requested,
         )
 
     def initGui(self) -> None:

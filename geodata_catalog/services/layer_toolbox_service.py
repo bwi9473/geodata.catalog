@@ -70,7 +70,7 @@ class LayerToolboxService:
     INTERACTIVE_MARKER_SETTINGS_KEY = "layer_toolbox/interactive_marker"
     BASEMAP_DEFAULT = "World Map"
     BASEMAP_SETTINGS_KEY = "layer_toolbox/selected_basemap"
-    MUAC_EXTENT_WGS84 = (2.0, 49.0, 9.5, 53.8)
+    MUAC_EXTENT_WGS84 = (1.0, 48.5, 11.5, 56.0)
     GROUPING_RULE_OPACITY = 0.6
 
     BASEMAPS: tuple[dict[str, str], ...] = (

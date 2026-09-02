@@ -381,13 +381,16 @@ class GeometryToolbar:
         iface,
         logger: PluginLogger,
         on_loadable_layers_requested: Callable[[], None] | None = None,
+        on_focus_muac_requested: Callable[[], None] | None = None,
     ) -> None:
         self._iface = iface
         self._logger = logger
         self._on_loadable_layers_requested = on_loadable_layers_requested
+        self._on_focus_muac_requested = on_focus_muac_requested
         self._toolbar = None
         self._identify_action: QAction | None = None
         self._loadable_layers_action: QAction | None = None
+        self._focus_muac_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
         self._previous_map_tool = None
 
@@ -424,6 +427,7 @@ class GeometryToolbar:
         self._identify_action.setToolTip("Identify features: click a feature on the map to see its attributes.")
         self._identify_action.toggled.connect(self._on_identify_toggled)
         self._toolbar.addAction(self._identify_action)
+        self._toolbar.addSeparator()
 
         self._loadable_layers_action = QAction(
             self._loadable_layers_icon(),
@@ -433,6 +437,15 @@ class GeometryToolbar:
         self._loadable_layers_action.setToolTip("Choose map layers")
         self._loadable_layers_action.triggered.connect(self._emit_loadable_layers_requested)
         self._toolbar.addAction(self._loadable_layers_action)
+
+        self._focus_muac_action = QAction(
+            self._focus_muac_icon(),
+            "Focus MUAC",
+            self._iface.mainWindow(),
+        )
+        self._focus_muac_action.setToolTip("Focus map on the MUAC control area")
+        self._focus_muac_action.triggered.connect(self._emit_focus_muac_requested)
+        self._toolbar.addAction(self._focus_muac_action)
 
         canvas = self._map_canvas()
         if canvas is not None:
@@ -457,6 +470,7 @@ class GeometryToolbar:
             self._toolbar = None
         self._identify_action = None
         self._loadable_layers_action = None
+        self._focus_muac_action = None
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -472,9 +486,20 @@ class GeometryToolbar:
                 return icon
         return QIcon(":/images/themes/default/mActionAddLayer.svg")
 
+    def _focus_muac_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionZoomToLayer.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionZoomToLayer.svg")
+
     def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
         if self._on_loadable_layers_requested is not None:
             self._on_loadable_layers_requested()
+
+    def _emit_focus_muac_requested(self, _checked: bool = False) -> None:
+        if self._on_focus_muac_requested is not None:
+            self._on_focus_muac_requested()
 
     def _map_canvas(self):
         if self._iface is None:

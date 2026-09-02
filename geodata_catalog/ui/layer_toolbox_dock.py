@@ -18,6 +18,7 @@ try:
         QDockWidget,
         QDoubleSpinBox,
         QFormLayout,
+        QFrame,
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover
     QDockWidget = object
     QDoubleSpinBox = None
     QFormLayout = None
+    QFrame = None
     QGridLayout = None
     QGroupBox = None
     QHBoxLayout = None
@@ -129,22 +131,38 @@ class LayerToolboxDock(QDockWidget):
         map_layout.addLayout(self._basemap_tile_layout)
         self._populate_basemap_tiles()
 
-        map_buttons = QHBoxLayout()
+        navigation_label = QLabel("Navigation")
+        navigation_label.setProperty("sectionLabel", True)
+        map_layout.addWidget(navigation_label)
+
+        navigation_buttons = QHBoxLayout()
         self._focus_muac_btn = QPushButton("Focus MUAC")
         self._focus_muac_btn.clicked.connect(self._on_focus_muac_clicked)
-        map_buttons.addWidget(self._focus_muac_btn)
+        navigation_buttons.addWidget(self._focus_muac_btn)
+        navigation_buttons.addStretch(1)
+        map_layout.addLayout(navigation_buttons)
 
+        marker_separator = QFrame()
+        marker_separator.setFrameShape(QFrame.HLine)
+        marker_separator.setFrameShadow(QFrame.Sunken)
+        map_layout.addWidget(marker_separator)
+
+        marker_label = QLabel("Marker tools")
+        marker_label.setProperty("sectionLabel", True)
+        map_layout.addWidget(marker_label)
+
+        marker_buttons = QHBoxLayout()
         self._place_marker_btn = QPushButton("Place Marker")
         self._place_marker_btn.setCheckable(True)
         self._place_marker_btn.toggled.connect(self._on_place_marker_toggled)
-        map_buttons.addWidget(self._place_marker_btn)
+        marker_buttons.addWidget(self._place_marker_btn)
 
         self._reset_marker_btn = QPushButton("Reset Marker")
         self._reset_marker_btn.clicked.connect(self._on_reset_marker_clicked)
-        map_buttons.addWidget(self._reset_marker_btn)
+        marker_buttons.addWidget(self._reset_marker_btn)
 
-        map_buttons.addStretch(1)
-        map_layout.addLayout(map_buttons)
+        marker_buttons.addStretch(1)
+        map_layout.addLayout(marker_buttons)
 
         root.addWidget(map_group)
 
@@ -175,6 +193,8 @@ class LayerToolboxDock(QDockWidget):
                     "QPushButton { min-height: 28px; border: 1px solid #B6C5DA; border-radius: 6px; background: #FFFFFF; padding: 2px 10px; }",
                     "QPushButton:hover { background: #EFF6FF; }",
                     "QPushButton:pressed { background: #DBEAFE; }",
+                    "QLabel[sectionLabel='true'] { color: #475569; font-size: 11px; font-weight: 600; }",
+                    "QFrame[frameShape='4'] { color: #D9E3EF; }",
                     "QToolButton[basemapTile='true'] { border: 1px solid #C9D5E6; border-radius: 8px; background: #FFFFFF; padding: 4px; color: #0F172A; font-weight: 600; text-align: left; }",
                     "QToolButton[basemapTile='true']:hover { background: #F8FBFF; border: 1px solid #60A5FA; }",
                     "QToolButton[basemapTile='true']:checked { background: #E0F2FE; border: 2px solid #0284C7; }",
