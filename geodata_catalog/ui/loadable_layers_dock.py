@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from geodata_catalog.models.layer_definition import LayerDefinition
+from geodata_catalog.models.saved_layer_view import SavedLayerView
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QIcon
@@ -36,6 +37,8 @@ class LoadableLayersDockWidget(QDockWidget):
 
     load_layer_requested = pyqtSignal(str, str)
     basemap_selected = pyqtSignal(str)
+    saved_view_requested = pyqtSignal(str)
+    saved_view_details_requested = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__("Data Panel", parent)
@@ -72,7 +75,7 @@ class LoadableLayersDockWidget(QDockWidget):
         self.layers_tree.setAlternatingRowColors(False)
         self.layers_tree.setUniformRowHeights(True)
         self.layers_tree.setIndentation(19)
-        self.layers_tree.itemChanged.connect(self._on_item_changed)
+        self.layers_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         root.addWidget(self.layers_tree, stretch=1)
 
         footer = QFrame()
@@ -132,11 +135,15 @@ class LoadableLayersDockWidget(QDockWidget):
         rows: list[dict[str, str | LayerDefinition]],
         loaded_layer_keys: set[str],
         _active_color: str,
+        saved_views: list[SavedLayerView] | None = None,
     ) -> None:
         self._rows = list(rows)
         self._updating_tree = True
         self.layers_tree.clear()
         grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
+        views_by_layer: dict[str, list[SavedLayerView]] = {}
+        for view in saved_views or []:
+            views_by_layer.setdefault(f"{view.datasource_id}:{view.layer_name}", []).append(view)
 
         for row in rows:
             datasource_id = str(row.get("datasource_id", ""))
@@ -149,6 +156,7 @@ class LoadableLayersDockWidget(QDockWidget):
 
         for category in sorted(grouped_rows.keys(), key=str.casefold):
             category_item = QTreeWidgetItem([category.upper()])
+            category_item.setFirstColumnSpanned(True)
             category_item.setIcon(0, QIcon(":/images/themes/default/mActionAddGroup.svg"))
             category_font = category_item.font(0)
             category_font.setBold(True)
@@ -174,7 +182,6 @@ class LoadableLayersDockWidget(QDockWidget):
                     continue
 
                 layer_key = layer.key()
-                loaded = layer_key in loaded_layer_keys
                 item = QTreeWidgetItem(category_item, [layer.display_name])
                 item.setIcon(0, self._layer_icon(layer))
                 item.setData(0, USER_ROLE, (datasource_id, layer.layer_name, layer_key, loadable))
@@ -186,13 +193,37 @@ class LoadableLayersDockWidget(QDockWidget):
                     f"Geometry: {layer.geometry_type or 'Unknown'}\n"
                     f"CRS: {layer.default_crs or 'Not set'}\n"
                     f"Loadable: {'Yes' if loadable else 'No'}\n"
-                    f"Loaded: {'Yes' if loaded else 'No'}"
+                    "Double-click to load this layer."
                 )
                 if not loadable and availability_reason:
                     item.setToolTip(0, f"{item.toolTip(0)}\nReason: {availability_reason}")
-                item.setCheckState(0, self._checked_state(loaded))
                 if not loadable:
                     item.setDisabled(True)
+
+                for view in sorted(views_by_layer.get(layer_key, []), key=lambda value: value.name.casefold()):
+                    view_item = QTreeWidgetItem(item, [""])
+                    view_item.setIcon(0, QIcon(":/images/themes/default/mActionFileSave.svg"))
+                    view_item.setData(0, USER_ROLE, ("saved_view", view.id))
+                    filter_text = self._saved_view_filter_text(view)
+                    grouping_text = self._saved_view_grouping_text(view)
+                    tooltip = (
+                        f"Layer: {layer.display_name}\n"
+                        f"Filter: {filter_text}\n"
+                        f"Grouping: {grouping_text}\n"
+                        f"Last updated: {view.updated_at}\n"
+                        "Double-click to apply this saved view."
+                    )
+                    view_item.setToolTip(0, tooltip)
+                    view_row = QWidget(self.layers_tree)
+                    view_row.setToolTip(tooltip)
+                    view_layout = QHBoxLayout(view_row)
+                    view_layout.setContentsMargins(0, 0, 0, 0)
+                    view_layout.setSpacing(4)
+                    view_label = QLabel(view.name, view_row)
+                    view_label.setToolTip(tooltip)
+                    view_layout.addWidget(view_label)
+                    view_layout.addStretch(1)
+                    self.layers_tree.setItemWidget(view_item, 0, view_row)
 
             category_item.setExpanded(True)
             category_item.setText(0, f"{category.upper()}   ({category_item.childCount()})")
@@ -201,15 +232,8 @@ class LoadableLayersDockWidget(QDockWidget):
         self._apply_filter(self.filter_edit.text())
 
     def refresh_loaded_state(self, loaded_layer_keys: set[str]) -> None:
-        self._updating_tree = True
-        for index in range(self.layers_tree.topLevelItemCount()):
-            category_item = self.layers_tree.topLevelItem(index)
-            for child_index in range(category_item.childCount()):
-                item = category_item.child(child_index)
-                payload = item.data(0, USER_ROLE)
-                if payload:
-                    item.setCheckState(0, self._checked_state(str(payload[2]) in loaded_layer_keys))
-        self._updating_tree = False
+        # Layer loading is triggered by a double-click; no stateful checkbox is shown.
+        return
 
     def set_basemap_options(self, options: list[dict[str, str]], selected_name: str) -> None:
         self._updating_basemap = True
@@ -230,14 +254,37 @@ class LoadableLayersDockWidget(QDockWidget):
             return value
         return getattr(Qt.CheckState, "Checked" if checked else "Unchecked")
 
-    def _on_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
-        if self._updating_tree or item.childCount():
-            return
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         payload = item.data(0, USER_ROLE)
-        if not payload or not bool(payload[3]):
-            return
-        if item.checkState(0) == self._checked_state(True):
+        if payload and len(payload) == 2 and payload[0] == "saved_view":
+            self.saved_view_requested.emit(str(payload[1]))
+        elif payload and len(payload) == 4 and bool(payload[3]):
             self.load_layer_requested.emit(str(payload[0]), str(payload[1]))
+
+    @staticmethod
+    def _saved_view_filter_text(view: SavedLayerView) -> str:
+        filter_state = view.filter_state
+        parts: list[str] = []
+        flight_level = filter_state.get("flight_level", {})
+        if isinstance(flight_level, dict) and flight_level.get("enabled"):
+            parts.append(
+                f"Flight levels {flight_level.get('mode')}: "
+                f"{flight_level.get('lower')} - {flight_level.get('upper')}"
+            )
+        for attribute in filter_state.get("attributes", []):
+            if isinstance(attribute, dict):
+                label = attribute.get("label") or attribute.get("column")
+                value = attribute.get("value", "")
+                if label and value:
+                    parts.append(f"{label}: {value}")
+        return "; ".join(parts) or "None"
+
+    @staticmethod
+    def _saved_view_grouping_text(view: SavedLayerView) -> str:
+        grouping = view.grouping
+        if grouping.get("kind") == "field":
+            return f"By {grouping.get('field', '')}"
+        return str(grouping.get("kind", "none")).replace("_", " ")
 
     def _on_project_basemap_clicked(self) -> None:
         if not self._updating_basemap:

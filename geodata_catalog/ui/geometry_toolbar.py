@@ -382,15 +382,18 @@ class GeometryToolbar:
         logger: PluginLogger,
         on_loadable_layers_requested: Callable[[], None] | None = None,
         on_focus_muac_requested: Callable[[], None] | None = None,
+        on_save_layer_view_requested: Callable[[], None] | None = None,
     ) -> None:
         self._iface = iface
         self._logger = logger
         self._on_loadable_layers_requested = on_loadable_layers_requested
         self._on_focus_muac_requested = on_focus_muac_requested
+        self._on_save_layer_view_requested = on_save_layer_view_requested
         self._toolbar = None
         self._identify_action: QAction | None = None
         self._loadable_layers_action: QAction | None = None
         self._focus_muac_action: QAction | None = None
+        self._save_layer_view_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
         self._previous_map_tool = None
 
@@ -438,6 +441,15 @@ class GeometryToolbar:
         self._loadable_layers_action.triggered.connect(self._emit_loadable_layers_requested)
         self._toolbar.addAction(self._loadable_layers_action)
 
+        self._save_layer_view_action = QAction(
+            self._save_layer_view_icon(),
+            "Save layer view",
+            self._iface.mainWindow(),
+        )
+        self._save_layer_view_action.setToolTip("Save the current filter and grouping for a layer")
+        self._save_layer_view_action.triggered.connect(self._emit_save_layer_view_requested)
+        self._toolbar.addAction(self._save_layer_view_action)
+
         self._focus_muac_action = QAction(
             self._focus_muac_icon(),
             "Focus MUAC",
@@ -471,6 +483,7 @@ class GeometryToolbar:
         self._identify_action = None
         self._loadable_layers_action = None
         self._focus_muac_action = None
+        self._save_layer_view_action = None
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -493,6 +506,13 @@ class GeometryToolbar:
                 return icon
         return QIcon(":/images/themes/default/mActionZoomToLayer.svg")
 
+    def _save_layer_view_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionFileSave.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionFileSave.svg")
+
     def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
         if self._on_loadable_layers_requested is not None:
             self._on_loadable_layers_requested()
@@ -500,6 +520,10 @@ class GeometryToolbar:
     def _emit_focus_muac_requested(self, _checked: bool = False) -> None:
         if self._on_focus_muac_requested is not None:
             self._on_focus_muac_requested()
+
+    def _emit_save_layer_view_requested(self, _checked: bool = False) -> None:
+        if self._on_save_layer_view_requested is not None:
+            self._on_save_layer_view_requested()
 
     def _map_canvas(self):
         if self._iface is None:

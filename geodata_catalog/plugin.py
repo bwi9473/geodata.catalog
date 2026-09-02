@@ -5,6 +5,7 @@ from geodata_catalog.logging_utils import PluginLogger
 from geodata_catalog.metadata.datasource_repository import DatasourceRepository
 from geodata_catalog.metadata.layer_config_repository import LayerConfigRepository
 from geodata_catalog.metadata.layer_repository import LayerRepository
+from geodata_catalog.metadata.saved_layer_view_repository import SavedLayerViewRepository
 from geodata_catalog.metadata.settings_manager import SettingsManager
 from geodata_catalog.metadata.system_configuration_repository import (
     DEFAULT_FLIGHT_LEVEL_PRESETS,
@@ -13,8 +14,10 @@ from geodata_catalog.metadata.system_configuration_repository import (
 )
 from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
+from geodata_catalog.models.saved_layer_view import SavedLayerView
 from geodata_catalog.services.datasource_service import DatasourceService
 from geodata_catalog.services.layer_filter_service import (
+    AttributeSearchFilter,
     FlightLevelFilter,
     LayerFilter,
     LayerFilterService,
@@ -29,14 +32,16 @@ from geodata_catalog.ui.geometry_toolbar import GeometryToolbar
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
 from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
+from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QAction, QApplication, QMenu, QMessageBox
 
 try:
-    from qgis.core import QgsMapLayerType
+    from qgis.core import QgsMapLayerType, QgsProject
 except ImportError:  # pragma: no cover
     QgsMapLayerType = None
+    QgsProject = None
 
 try:
     from qgis.gui import QgsLayerTreeViewContextMenuProvider
@@ -56,6 +61,7 @@ class GeoDataCatalogPlugin:
         self._system_configuration_repository = SystemConfigurationRepository(settings_manager)
         datasource_repository = DatasourceRepository(settings_manager)
         layer_repository = LayerRepository(settings_manager)
+        self._saved_layer_view_repository = SavedLayerViewRepository(settings_manager)
 
         # Per-layer display/search config stored in a separate layer_config.json
         layer_config_path = settings_manager.sibling_file_path("layer_config.json")
@@ -82,11 +88,13 @@ class GeoDataCatalogPlugin:
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
         self._layer_panel_filter_action: QAction | None = None
+        self._layer_groupings: dict[str, dict[str, str]] = {}
         self._geometry_toolbar = GeometryToolbar(
             self.iface,
             self._logger,
             on_loadable_layers_requested=self._show_loadable_layers_dock,
             on_focus_muac_requested=self._on_focus_muac_requested,
+            on_save_layer_view_requested=self._on_save_layer_view_from_toolbar,
         )
 
     def initGui(self) -> None:
@@ -139,6 +147,8 @@ class GeoDataCatalogPlugin:
         if self._loadable_layers_dock is None:
             self._loadable_layers_dock = LoadableLayersDockWidget(self.iface.mainWindow())
             self._loadable_layers_dock.load_layer_requested.connect(self._on_load_layer)
+            self._loadable_layers_dock.saved_view_requested.connect(self._apply_saved_layer_view)
+            self._loadable_layers_dock.saved_view_details_requested.connect(self._show_saved_layer_view_details)
             self._loadable_layers_dock.basemap_selected.connect(self._on_basemap_selected)
             self._configure_as_floating_window(self._loadable_layers_dock)
         self._apply_configured_theme(self._loadable_layers_dock)
@@ -333,6 +343,15 @@ class GeoDataCatalogPlugin:
         if quick_search_action is not None:
             geo_menu.addAction(quick_search_action)
 
+        if layer_def is not None:
+            save_view_action = QAction("Save Layer View", geo_menu)
+            save_view_action.triggered.connect(
+                lambda _checked=False, current_layer=layer, definition=layer_def: self._save_layer_view(
+                    current_layer, definition
+                )
+            )
+            geo_menu.addAction(save_view_action)
+
         if self._supports_vertices_actions(layer):
             if not geo_menu.isEmpty():
                 geo_menu.addSeparator()
@@ -366,17 +385,11 @@ class GeoDataCatalogPlugin:
         if group_fields or flight_level_grouping_enabled:
             for field_name in group_fields:
                 action = QAction(field_name, group_menu)
-                action.triggered.connect(
-                    lambda _checked=False, field_name=field_name: self._layer_toolbox_service.apply_value_grouping_rules(
-                        layer, field_name
-                    )
-                )
+                action.triggered.connect(lambda _checked=False, field_name=field_name: self._apply_value_grouping(layer, field_name))
                 group_menu.addAction(action)
             if flight_level_grouping_enabled:
                 flight_level_action = QAction("Flight Level Band", group_menu)
-                flight_level_action.triggered.connect(
-                    lambda _checked=False: self._layer_toolbox_service.apply_flight_level_range_rules(layer)
-                )
+                flight_level_action.triggered.connect(lambda _checked=False: self._apply_flight_level_range_grouping(layer))
                 group_menu.addAction(flight_level_action)
                 preset_grouping_action = QAction("Flight Level Presets", group_menu)
                 preset_grouping_action.triggered.connect(
@@ -397,7 +410,22 @@ class GeoDataCatalogPlugin:
         except Exception as exc:
             self._logger.warning(f"Unable to load flight-level presets for grouping: {exc}")
             presets = DEFAULT_FLIGHT_LEVEL_PRESETS
-        return self._layer_toolbox_service.apply_flight_level_preset_rules(layer, presets)
+        applied = self._layer_toolbox_service.apply_flight_level_preset_rules(layer, presets)
+        if applied:
+            self._layer_groupings[self._qgis_layer_id(layer)] = {"kind": "flight_level_presets"}
+        return applied
+
+    def _apply_value_grouping(self, layer, field_name: str) -> bool:
+        applied = self._layer_toolbox_service.apply_value_grouping_rules(layer, field_name)
+        if applied:
+            self._layer_groupings[self._qgis_layer_id(layer)] = {"kind": "field", "field": field_name}
+        return applied
+
+    def _apply_flight_level_range_grouping(self, layer) -> bool:
+        applied = self._layer_toolbox_service.apply_flight_level_range_rules(layer)
+        if applied:
+            self._layer_groupings[self._qgis_layer_id(layer)] = {"kind": "flight_level_range"}
+        return applied
 
     def _supports_vertices_actions(self, layer) -> bool:
         if layer is None or self._layer_toolbox_service is None:
@@ -561,7 +589,12 @@ class GeoDataCatalogPlugin:
                     str((r.get("layer") or LayerDefinition("", "", "", "", "")).display_name).casefold(),
                 )
             )
-            self._loadable_layers_dock.set_rows(rows, self._loaded_layer_keys, "#2777B5")
+            self._loadable_layers_dock.set_rows(
+                rows,
+                self._loaded_layer_keys,
+                "#2777B5",
+                self._saved_layer_view_repository.list_all(),
+            )
             self._logger.info(f"All-layers view refreshed with {len(rows)} loadable layers")
         except GeoDataCatalogException as exc:
             self._show_error("Refresh All Layers", str(exc))
@@ -581,6 +614,195 @@ class GeoDataCatalogPlugin:
                 self._loadable_layers_dock.refresh_loaded_state(self._loaded_layer_keys)
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
+
+    def _on_save_layer_view_from_toolbar(self) -> None:
+        choices = self._available_layer_choices()
+        if not choices:
+            self._show_error("Save Layer View", "No catalog layers are available.")
+            return
+        active = self._active_layer()
+        active_definition = self._find_layer_definition_for_qgis_layer(active) if active is not None else None
+        selected_key = active_definition.key() if active_definition is not None else ""
+        existing_names: dict[str, list[str]] = {}
+        for view in self._saved_layer_view_repository.list_all():
+            existing_names.setdefault(f"{view.datasource_id}:{view.layer_name}", []).append(view.name)
+        dialog = SaveLayerViewDialog(
+            self.iface.mainWindow(), choices, selected_key, existing_names
+        )
+        if self._run_dialog(dialog) != self._accepted_code(dialog):
+            return
+        datasource_id, layer_name, _display_name = dialog.selected_layer()
+        try:
+            definition = self._resolve_layer(datasource_id, layer_name)
+        except GeoDataCatalogException as exc:
+            self._show_error("Save Layer View", str(exc))
+            return
+        layer = self._find_qgis_layer(definition)
+        if layer is None:
+            self._on_load_layer(datasource_id, layer_name)
+            layer = self._find_qgis_layer(definition)
+        if layer is None:
+            self._show_error("Save Layer View", "The selected layer could not be loaded.")
+            return
+        self._persist_layer_view(layer, definition, dialog.view_name())
+
+    def _save_layer_view(self, layer, definition: LayerDefinition) -> None:
+        existing_names = [
+            view.name
+            for view in self._saved_layer_view_repository.list_by_layer(
+                definition.datasource_id, definition.layer_name
+            )
+        ]
+        dialog = SaveLayerViewDialog(
+            self.iface.mainWindow(),
+            [(definition.datasource_id, definition.layer_name, definition.display_name)],
+            definition.key(),
+            existing_names,
+        )
+        if self._run_dialog(dialog) == self._accepted_code(dialog):
+            self._persist_layer_view(layer, definition, dialog.view_name())
+
+    def _persist_layer_view(self, layer, definition: LayerDefinition, name: str) -> None:
+        self._saved_layer_view_repository.upsert(
+            SavedLayerView(
+                datasource_id=definition.datasource_id,
+                layer_name=definition.layer_name,
+                layer_display_name=definition.display_name,
+                name=name,
+                filter_state=self._serialize_layer_filter(layer, definition),
+                grouping=self._layer_groupings.get(self._qgis_layer_id(layer), {"kind": "none"}),
+                updated_at="",
+            )
+        )
+        self._refresh_all_layers_view()
+        self._logger.info(f"Saved layer view '{name}' for '{definition.display_name}'.")
+
+    def _apply_saved_layer_view(self, view_id: str) -> None:
+        view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
+        if view is None:
+            self._show_error("Saved Layer View", "This saved view no longer exists.")
+            return
+        try:
+            definition = self._resolve_layer(view.datasource_id, view.layer_name)
+        except GeoDataCatalogException as exc:
+            self._show_error("Saved Layer View", str(exc))
+            return
+        layer = self._find_qgis_layer(definition)
+        if layer is None:
+            self._on_load_layer(view.datasource_id, view.layer_name)
+            layer = self._find_qgis_layer(definition)
+        if layer is None:
+            self._show_error("Saved Layer View", "The layer could not be loaded.")
+            return
+        self._apply_layer_filter(layer, self._deserialize_layer_filter(view.filter_state))
+        grouping = view.grouping
+        kind = grouping.get("kind", "none")
+        if kind == "field":
+            self._apply_value_grouping(layer, grouping.get("field", ""))
+        elif kind == "flight_level_range":
+            self._apply_flight_level_range_grouping(layer)
+        elif kind == "flight_level_presets":
+            self._apply_flight_level_preset_grouping(layer)
+        self._logger.info(f"Applied saved layer view '{view.name}' for '{definition.display_name}'.")
+
+    def _show_saved_layer_view_details(self, view_id: str) -> None:
+        view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
+        if view is None:
+            return
+        filter_state = view.filter_state
+        attributes = filter_state.get("attributes", [])
+        attribute_text = "\n".join(
+            f"{item.get('label') or item.get('column')}: {item.get('value', '')}"
+            for item in attributes if isinstance(item, dict)
+        ) or "None"
+        flight = filter_state.get("flight_level", {})
+        flight_text = "None"
+        if flight.get("enabled"):
+            flight_text = f"{flight.get('mode')}: {flight.get('lower')} - {flight.get('upper')}"
+        grouping = view.grouping
+        grouping_text = grouping.get("field", grouping.get("kind", "none")).replace("_", " ")
+        QMessageBox.information(
+            self.iface.mainWindow(),
+            view.name,
+            f"Layer: {view.layer_display_name}\nLast updated: {view.updated_at}\n\n"
+            f"Flight levels: {flight_text}\nAttributes:\n{attribute_text}\n\nGrouping: {grouping_text}",
+        )
+
+    def _available_layer_choices(self) -> list[tuple[str, str, str]]:
+        choices: list[tuple[str, str, str]] = []
+        for datasource in self._datasource_service.list_datasources():
+            try:
+                layers = self._layer_service.discover_layers(datasource)
+            except GeoDataCatalogException:
+                layers = self._fallback_layers_for_unavailable_datasource(datasource)
+            self._layer_cache[datasource.id] = {layer.layer_name: layer for layer in layers}
+            choices.extend((layer.datasource_id, layer.layer_name, layer.display_name) for layer in layers)
+        return sorted(choices, key=lambda item: item[2].casefold())
+
+    def _find_qgis_layer(self, definition: LayerDefinition):
+        if QgsProject is None:
+            return None
+        try:
+            return next(
+                (layer for layer in QgsProject.instance().mapLayers().values() if layer.name() == definition.display_name),
+                None,
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _qgis_layer_id(layer) -> str:
+        try:
+            return str(layer.id())
+        except Exception:
+            return str(id(layer))
+
+    def _serialize_layer_filter(self, layer, definition: LayerDefinition) -> dict[str, object]:
+        subset = layer.subsetString() or ""
+        flight = LayerFilterService.parse_fl_from_subset_string(subset)
+        attributes = LayerFilterService.parse_attribute_filters_from_subset(
+            subset, definition.searchable_columns or []
+        )
+        return {
+            "flight_level": {
+                "mode": flight.mode,
+                "lower": flight.lower,
+                "upper": flight.upper,
+                "enabled": flight.enabled,
+                "lower_field": flight.lower_field,
+                "upper_field": flight.upper_field,
+            } if flight is not None else {"mode": "none", "lower": 0, "upper": 600, "enabled": False},
+            "attributes": [
+                {
+                    "column": attribute.column,
+                    "value": attribute.value,
+                    "label": attribute.label,
+                    "data_type": attribute.data_type,
+                }
+                for attribute in attributes
+            ],
+        }
+
+    @staticmethod
+    def _deserialize_layer_filter(state: dict[str, object]) -> LayerFilter:
+        flight_state = dict(state.get("flight_level", {}))
+        flight = FlightLevelFilter(
+            mode=str(flight_state.get("mode", "none")),
+            lower=int(flight_state.get("lower", 0)), upper=int(flight_state.get("upper", 600)),
+            enabled=bool(flight_state.get("enabled", False)),
+            lower_field=str(flight_state.get("lower_field", "fl_lower")),
+            upper_field=str(flight_state.get("upper_field", "fl_upper")),
+        )
+        attributes = [
+            item for item in state.get("attributes", []) if isinstance(item, dict)
+        ]
+        return LayerFilter(
+            flight_level=flight,
+            attributes=[
+                AttributeSearchFilter(**item)
+                for item in attributes
+            ],
+        )
 
     def _on_edit_layer_config(self, datasource_id: str, layer_name: str) -> None:
         """Open the per-layer config dialog and persist the result."""
