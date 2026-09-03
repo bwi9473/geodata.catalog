@@ -18,6 +18,7 @@ try:
         QComboBox,
         QDialog,
         QFormLayout,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -46,6 +47,7 @@ except ImportError:  # pragma: no cover
     QComboBox = None
     QDialog = object
     QFormLayout = None
+    QGridLayout = None
     QGroupBox = None
     QHBoxLayout = None
     QLabel = None
@@ -64,6 +66,20 @@ if QDialog is not object:
     MOUSE_LEFT = getattr(Qt, "LeftButton", _MOUSE_LEFT_FALLBACK)
 else:  # pragma: no cover
     MOUSE_LEFT = None
+
+
+def _qt_check_state(member: str, fallback: int):
+    if Qt is None:  # pragma: no cover
+        return fallback
+    check_state = getattr(Qt, "CheckState", None)
+    if check_state is not None and hasattr(check_state, member):
+        return getattr(check_state, member)
+    return getattr(Qt, member, fallback)
+
+
+_CHECKED_STATE = _qt_check_state("Checked", 2)
+_UNCHECKED_STATE = _qt_check_state("Unchecked", 0)
+_PARTIALLY_CHECKED_STATE = _qt_check_state("PartiallyChecked", 1)
 
 # Sentinel for when pyqtSignal is unavailable (non-QGIS test environments).
 _Signal = pyqtSignal if pyqtSignal is not None else object
@@ -231,6 +247,7 @@ class LayerFilterDialog(QDialog):
         filtered_distinct_values: dict[str, dict[str, list[str]]] | None = None,
         show_flight_level: bool = True,
         flight_level_presets: list[dict[str, int | str]] | None = None,
+        logger: Any | None = None,
     ) -> None:
         if QDialog is object:  # pragma: no cover
             raise RuntimeError("QGIS runtime is not available.")
@@ -238,14 +255,18 @@ class LayerFilterDialog(QDialog):
         self.setWindowTitle("Layer Filter")
         self.setModal(False)
         self._layer_name = layer_name
+        self._logger = logger
         self._show_flight_level = bool(show_flight_level)
         self._searchable_columns: list[dict[str, str | bool]] = searchable_columns or []
         self._distinct_values: dict[str, list[str]] = distinct_values or {}
         self._filtered_distinct_values: dict[str, dict[str, list[str]]] = filtered_distinct_values or {}
         self._attr_edits: dict[str, Any] = {}
         self._attr_combos: dict[str, Any] = {}
+        self._attr_checks: dict[str, Any] = {}
         self._attr_distinct_edits: dict[str, Any] = {}
         self._attr_types: dict[str, str] = {}
+        self._checkbox_value_map: dict[str, tuple[str, str]] = {}
+        self._checkbox_fallback_columns: set[str] = set()
         self._filter_by_map: dict[str, str] = {}
         self._flight_level_presets = self._normalize_flight_level_presets(flight_level_presets)
         self._preset_buttons: list[tuple[Any, int, int]] = []
@@ -338,15 +359,31 @@ class LayerFilterDialog(QDialog):
         attr_group = QGroupBox("Attribute Search")
         attr_form = QFormLayout(attr_group)
 
+        checkbox_columns = []
+        for col_def in self._searchable_columns:
+            col_name = str(col_def.get("name", "")).strip()
+            input_type = (col_def.get("input_type", "text field") or "text field").strip().lower()
+            if not col_name or input_type != "checkbox":
+                continue
+            if bool(col_def.get("use_distinct", False)) and not self._prepare_distinct_checkbox_column(col_def):
+                self._checkbox_fallback_columns.add(col_name)
+                continue
+            checkbox_columns.append(col_def)
+        if checkbox_columns:
+            attr_form.addRow(self._build_checkbox_filter_grid(checkbox_columns))
+
         for col_def in self._searchable_columns:
             col_name = col_def.get("name", "")
             label = col_def.get("label", col_name)
             data_type = (col_def.get("type", "varchar") or "varchar").strip().lower()
+            input_type = (col_def.get("input_type", "text field") or "text field").strip().lower()
             use_distinct = bool(col_def.get("use_distinct", False))
             if not col_name:
                 continue
 
-            if use_distinct:
+            if input_type == "checkbox" and col_name not in self._checkbox_fallback_columns:
+                continue
+            elif use_distinct or input_type == "dropdown":
                 combo = QComboBox()
                 combo.addItem("(no filter)", "")
                 distinct_vals = self._distinct_values.get(col_name, [])
@@ -355,11 +392,12 @@ class LayerFilterDialog(QDialog):
                 attr_form.addRow(f"{label} - select", combo)
                 self._attr_combos[col_name] = combo
 
-                extra_edit = QLineEdit()
-                extra_edit.setPlaceholderText("Or type values manually (comma-separated)")
-                extra_edit.setClearButtonEnabled(True)
-                attr_form.addRow(f"{label} - custom", extra_edit)
-                self._attr_distinct_edits[col_name] = extra_edit
+                if use_distinct and col_name not in self._checkbox_fallback_columns:
+                    extra_edit = QLineEdit()
+                    extra_edit.setPlaceholderText("Or type values manually (comma-separated)")
+                    extra_edit.setClearButtonEnabled(True)
+                    attr_form.addRow(f"{label} - custom", extra_edit)
+                    self._attr_distinct_edits[col_name] = extra_edit
             else:
                 edit = QLineEdit()
                 edit.setPlaceholderText(f"Filter on {label} (comma-separated values)")
@@ -378,6 +416,101 @@ class LayerFilterDialog(QDialog):
                 )
 
         return attr_group
+
+    def _prepare_distinct_checkbox_column(self, col_def: dict[str, str | bool]) -> bool:
+        col_name = str(col_def.get("name", "")).strip()
+        label = str(col_def.get("label", col_name))
+        values = self._distinct_values_for_column(col_name)
+        invalid_values = [value for value in values if value.strip().casefold() not in {"y", "n"}]
+        if invalid_values:
+            self._log_checkbox_fallback(label, invalid_values)
+            return False
+
+        by_normalized = {value.strip().casefold(): value for value in values}
+        self._checkbox_value_map[col_name] = (
+            by_normalized.get("y", "Y"),
+            by_normalized.get("n", "N"),
+        )
+        return True
+
+    def _distinct_values_for_column(self, col_name: str) -> list[str]:
+        return sorted({str(value).strip() for value in self._distinct_values.get(col_name, []) if str(value).strip()})
+
+    def _log_checkbox_fallback(self, label: str, invalid_values: list[str]) -> None:
+        if self._logger is None or not hasattr(self._logger, "warning"):
+            return
+        shown_values = ", ".join(invalid_values[:8])
+        if len(invalid_values) > 8:
+            shown_values = f"{shown_values}, ..."
+        self._logger.warning(
+            f"Field '{label}' is configured as distinct checkbox, but contains values other than Y/N: {shown_values}. Rendering as dropdown."
+        )
+
+    def _build_checkbox_filter_grid(self, checkbox_columns: list[dict[str, str | bool]]):
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+
+        cells = []
+        for col_def in checkbox_columns:
+            col_name = str(col_def.get("name", "")).strip()
+            if not col_name:
+                continue
+            label = str(col_def.get("label", col_name))
+            data_type = (col_def.get("type", "varchar") or "varchar").strip().lower()
+
+            checkbox = QCheckBox("")
+            checkbox.setTristate(True)
+            checkbox.setCheckState(_PARTIALLY_CHECKED_STATE)
+            if col_name in self._checkbox_value_map:
+                checked_value, unchecked_value = self._checkbox_value_map[col_name]
+                checkbox._checked_label = checked_value
+                checkbox._unchecked_label = unchecked_value
+            checkbox.stateChanged.connect(
+                lambda state, current_checkbox=checkbox: self._refresh_attr_checkbox_text(
+                    current_checkbox,
+                    state,
+                )
+            )
+
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(4)
+            cell_layout.addWidget(QLabel(label))
+            cell_layout.addWidget(checkbox)
+            cell.setMaximumWidth(self._checkbox_cell_width(cell, checkbox))
+            cells.append(cell)
+            self._attr_checks[col_name] = checkbox
+            self._attr_types[col_name] = data_type
+
+        columns = self._checkbox_grid_column_count(cells)
+        for index, cell in enumerate(cells):
+            grid.addWidget(cell, index // columns, index % columns)
+        return container
+
+    def _checkbox_grid_column_count(self, cells: list[Any]) -> int:
+        if not cells:
+            return 1
+        widget_width = self.width() if hasattr(self, "width") else 0
+        available_width = max(320, widget_width - 80)
+        screen = self.screen() if hasattr(self, "screen") else None
+        if screen is not None and hasattr(screen, "availableGeometry"):
+            screen_width = int(screen.availableGeometry().width() * 0.65)
+            available_width = min(screen_width, available_width) if widget_width > 420 else screen_width
+        cell_width = max(56, max(cell.sizeHint().width() for cell in cells) + 10)
+        return max(1, min(len(cells), available_width // cell_width))
+
+    def _checkbox_cell_width(self, cell: Any, checkbox: Any) -> int:
+        original_text = checkbox.text()
+        checked_label = str(getattr(checkbox, "_checked_label", "Y"))
+        unchecked_label = str(getattr(checkbox, "_unchecked_label", "N"))
+        checkbox.setText(checked_label if len(checked_label) >= len(unchecked_label) else unchecked_label)
+        width = cell.sizeHint().width()
+        checkbox.setText(original_text)
+        return width
 
     def _build_flight_level_group(self):
         fl_group = QGroupBox("Flight Level Filter")
@@ -565,6 +698,42 @@ class LayerFilterDialog(QDialog):
             return []
         return [f"{column_name}: {', '.join(bad)}"]
 
+    def _refresh_attr_checkbox_text(self, checkbox: Any, state: Any) -> None:
+        if self._state_matches(state, _PARTIALLY_CHECKED_STATE):
+            checkbox.setText("")
+        elif self._state_matches(state, _CHECKED_STATE):
+            checkbox.setText(str(getattr(checkbox, "_checked_label", "Y")))
+        else:
+            checkbox.setText(str(getattr(checkbox, "_unchecked_label", "N")))
+
+    def _checkbox_filter_value(self, column_name: str, checkbox: Any) -> str:
+        state = checkbox.checkState()
+        if self._state_matches(state, _PARTIALLY_CHECKED_STATE):
+            return ""
+        checked = self._state_matches(state, _CHECKED_STATE)
+        if column_name in self._checkbox_value_map:
+            checked_value, unchecked_value = self._checkbox_value_map[column_name]
+            return checked_value if checked else unchecked_value
+        return "Y" if checked else "N"
+
+    def _set_checkbox_filter_value(self, checkbox: Any, raw_value: str) -> None:
+        normalized = str(raw_value or "").strip().casefold()
+        if normalized in {"true", "1", "yes", "y", "checked"}:
+            checkbox.setCheckState(_CHECKED_STATE)
+        elif normalized in {"false", "0", "no", "n", "unchecked"}:
+            checkbox.setCheckState(_UNCHECKED_STATE)
+        else:
+            checkbox.setCheckState(_PARTIALLY_CHECKED_STATE)
+
+    @staticmethod
+    def _state_matches(state: Any, expected: Any) -> bool:
+        if state == expected:
+            return True
+        try:
+            return int(state) == int(expected)
+        except (TypeError, ValueError):
+            return False
+
     # ------------------------------------------------------------------ #
     # Public helpers                                                      #
     # ------------------------------------------------------------------ #
@@ -599,6 +768,18 @@ class LayerFilterDialog(QDialog):
         attrs = []
         for col_name, edit in self._attr_edits.items():
             value = edit.text().strip()
+            if value:
+                attrs.append(
+                    AttributeSearchFilter(
+                        column=col_name,
+                        value=value,
+                        label=col_name,
+                        data_type=self._attr_types.get(col_name, "varchar"),
+                    )
+                )
+
+        for col_name, checkbox in self._attr_checks.items():
+            value = self._checkbox_filter_value(col_name, checkbox)
             if value:
                 attrs.append(
                     AttributeSearchFilter(
@@ -651,6 +832,8 @@ class LayerFilterDialog(QDialog):
         for attr in layer_filter.attributes:
             if attr.column in self._attr_edits:
                 self._attr_edits[attr.column].setText(attr.value)
+            elif attr.column in self._attr_checks:
+                self._set_checkbox_filter_value(self._attr_checks[attr.column], attr.value)
             elif attr.column in self._attr_combos:
                 stored_value = attr.value
                 distinct_vals = [

@@ -68,6 +68,7 @@ class LayerConfig:
                         "name": name,
                         "label": str(column.get("label", name)),
                         "type": str(column.get("type", "varchar")),
+                        "input_type": str(column.get("input_type", "text field")),
                         "position": len(columns),
                     },
                 )
@@ -96,6 +97,7 @@ class LayerConfig:
                 "name": str(column["name"]),
                 "label": str(column.get("label", column["name"])),
                 "type": str(column.get("type", "varchar")),
+                "input_type": str(column.get("input_type", "text field")),
             }
             for column in self.field_columns
             if bool(column.get("export", False))
@@ -105,7 +107,7 @@ class LayerConfig:
     def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
         return {
             key: column[key]
-            for key in ("name", "label", "type", "use_distinct", "filter_by")
+            for key in ("name", "label", "type", "input_type", "use_distinct", "filter_by")
             if key in column
         }
 

@@ -383,18 +383,24 @@ class GeometryToolbar:
         on_loadable_layers_requested: Callable[[], None] | None = None,
         on_focus_muac_requested: Callable[[], None] | None = None,
         on_save_layer_view_requested: Callable[[], None] | None = None,
+        on_place_marker_requested: Callable[[], bool] | None = None,
+        on_reset_marker_requested: Callable[[], None] | None = None,
     ) -> None:
         self._iface = iface
         self._logger = logger
         self._on_loadable_layers_requested = on_loadable_layers_requested
         self._on_focus_muac_requested = on_focus_muac_requested
         self._on_save_layer_view_requested = on_save_layer_view_requested
+        self._on_place_marker_requested = on_place_marker_requested
+        self._on_reset_marker_requested = on_reset_marker_requested
         self._toolbar = None
         self._identify_action: QAction | None = None
         self._loadable_layers_action: QAction | None = None
         self._focus_muac_action: QAction | None = None
         self._save_layer_view_action: QAction | None = None
+        self._place_marker_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
+        self._marker_visible = False
         self._previous_map_tool = None
 
     def initGui(self) -> None:
@@ -459,6 +465,18 @@ class GeometryToolbar:
         self._focus_muac_action.triggered.connect(self._emit_focus_muac_requested)
         self._toolbar.addAction(self._focus_muac_action)
 
+        self._toolbar.addSeparator()
+
+        self._place_marker_action = QAction(
+            self._place_marker_icon(),
+            "Interactive Marker",
+            self._iface.mainWindow(),
+        )
+        self._place_marker_action.setCheckable(True)
+        self._place_marker_action.setToolTip("Show or remove the configured interactive marker")
+        self._place_marker_action.toggled.connect(self._on_place_marker_toggled)
+        self._toolbar.addAction(self._place_marker_action)
+
         canvas = self._map_canvas()
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
@@ -484,6 +502,8 @@ class GeometryToolbar:
         self._loadable_layers_action = None
         self._focus_muac_action = None
         self._save_layer_view_action = None
+        self._place_marker_action = None
+        self._marker_visible = False
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -512,6 +532,13 @@ class GeometryToolbar:
             if not icon.isNull():
                 return icon
         return QIcon(":/images/themes/default/mActionFileSave.svg")
+
+    def _place_marker_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionCapturePoint.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionCapturePoint.svg")
 
     def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
         if self._on_loadable_layers_requested is not None:
@@ -547,9 +574,29 @@ class GeometryToolbar:
             self._identify_tool.setAction(self._identify_action)
         canvas.setMapTool(self._identify_tool)
 
-    def _on_map_tool_set(self, new_tool, _old_tool=None) -> None:
-        if self._identify_action is None:
+    def _on_place_marker_toggled(self, enabled: bool) -> None:
+        self._logger.info(f"Marker toolbar toggled: enabled={enabled} visible={self._marker_visible}")
+
+        if not enabled:
+            if self._marker_visible and self._on_reset_marker_requested is not None:
+                self._logger.info("Marker toolbar toggle-off requested marker reset.")
+                self._on_reset_marker_requested()
+            self._marker_visible = False
             return
-        is_active = self._identify_tool is not None and new_tool == self._identify_tool
-        if self._identify_action.isChecked() != is_active:
-            self._identify_action.setChecked(is_active)
+
+        self._logger.info("Marker toolbar toggle-on requested stored marker display.")
+        shown = False
+        if self._on_place_marker_requested is not None:
+            shown = bool(self._on_place_marker_requested())
+        self._logger.info(f"Stored marker display callback finished: shown={shown}.")
+        self._marker_visible = shown
+        if not shown and self._place_marker_action is not None and self._place_marker_action.isChecked():
+            self._place_marker_action.blockSignals(True)
+            self._place_marker_action.setChecked(False)
+            self._place_marker_action.blockSignals(False)
+
+    def _on_map_tool_set(self, new_tool, _old_tool=None) -> None:
+        if self._identify_action is not None:
+            is_active = self._identify_tool is not None and new_tool == self._identify_tool
+            if self._identify_action.isChecked() != is_active:
+                self._identify_action.setChecked(is_active)

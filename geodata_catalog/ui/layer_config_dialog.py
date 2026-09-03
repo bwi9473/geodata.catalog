@@ -169,12 +169,22 @@ class LayerConfigDialog(QDialog):
 
         fields_group = QGroupBox("Layer Attributes")
         fields_layout = QVBoxLayout(fields_group)
-        self._fields_table = QTableWidget(0, 8)
+        self._fields_table = QTableWidget(0, 9)
         self._fields_table.setHorizontalHeaderLabels(
-            ["Field Name", "Display Label", "Data Type", "Search", "Export", "Key Column", "Use Distinct", "Filter By"]
+            [
+                "Field Name",
+                "Display Label",
+                "Data Type",
+                "Display As",
+                "Search",
+                "Export",
+                "Key Column",
+                "Use Distinct",
+                "Filter By",
+            ]
         )
         self._fields_table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate([150, 150, 90, 60, 60, 85, 80]):
+        for column, width in enumerate([145, 145, 85, 110, 60, 60, 85, 80]):
             self._fields_table.setColumnWidth(column, width)
         self._fields_table.setMinimumHeight(250)
         fields_layout.addWidget(self._fields_table)
@@ -259,7 +269,11 @@ class LayerConfigDialog(QDialog):
 
     @staticmethod
     def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
-        runtime = {key: column[key] for key in ("name", "label", "type", "use_distinct", "filter_by") if key in column}
+        runtime = {
+            key: column[key]
+            for key in ("name", "label", "type", "input_type", "use_distinct", "filter_by")
+            if key in column
+        }
         return runtime
 
     @staticmethod
@@ -282,6 +296,7 @@ class LayerConfigDialog(QDialog):
                 "name": name,
                 "label": str(column.get("label", field.get("label", name))),
                 "type": str(column.get("type", field.get("type", "varchar"))),
+                "input_type": str(column.get("input_type", "text field")),
                 "position": position,
                 "search": bool(column.get("search", False)),
                 "export": bool(column.get("export", False)),
@@ -310,7 +325,8 @@ class LayerConfigDialog(QDialog):
             self._fields_table.setItem(row, 0, name_item)
             self._fields_table.setItem(row, 1, QTableWidgetItem(str(column.get("label", name))))
             self._set_type_combo_at_row(self._fields_table, row, str(column.get("type", "varchar")))
-            for index, key in ((3, "search"), (4, "export"), (5, "key"), (6, "use_distinct")):
+            self._set_input_type_combo_at_row(self._fields_table, row, str(column.get("input_type", "text field")))
+            for index, key in ((4, "search"), (5, "export"), (6, "key"), (7, "use_distinct")):
                 checkbox = QCheckBox()
                 checkbox.setChecked(bool(column.get(key, False)))
                 self._fields_table.setCellWidget(row, index, checkbox)
@@ -321,14 +337,14 @@ class LayerConfigDialog(QDialog):
             filter_by_edit = QLineEdit(str(column.get("filter_by", "") or ""))
             filter_by_edit.setPlaceholderText("parent field name (optional)")
             filter_by_edit.setClearButtonEnabled(True)
-            self._fields_table.setCellWidget(row, 7, filter_by_edit)
+            self._fields_table.setCellWidget(row, 8, filter_by_edit)
 
     def _on_key_column_toggled(self, selected_row: int, checked: bool) -> None:
         if not checked:
             return
         for row in range(self._fields_table.rowCount()):
             if row != selected_row:
-                self._fields_table.cellWidget(row, 5).setChecked(False)
+                self._fields_table.cellWidget(row, 6).setChecked(False)
 
     @classmethod
     def _aviation_svg_markers(cls) -> list[tuple[str, str]]:
@@ -410,15 +426,17 @@ class LayerConfigDialog(QDialog):
             if not name:
                 continue
             type_combo = self._fields_table.cellWidget(row, 2)
-            filter_by_edit = self._fields_table.cellWidget(row, 7)
+            input_type_combo = self._fields_table.cellWidget(row, 3)
+            filter_by_edit = self._fields_table.cellWidget(row, 8)
             entry: dict[str, str | bool] = {
                 "name": name,
                 "label": label_item.text().strip() if label_item and label_item.text().strip() else name,
                 "type": type_combo.currentText().strip().lower() if type_combo else "varchar",
-                "search": bool(self._fields_table.cellWidget(row, 3).isChecked()),
-                "export": bool(self._fields_table.cellWidget(row, 4).isChecked()),
-                "key": bool(self._fields_table.cellWidget(row, 5).isChecked()),
-                "use_distinct": bool(self._fields_table.cellWidget(row, 6).isChecked()),
+                "input_type": input_type_combo.currentText().strip().lower() if input_type_combo else "text field",
+                "search": bool(self._fields_table.cellWidget(row, 4).isChecked()),
+                "export": bool(self._fields_table.cellWidget(row, 5).isChecked()),
+                "key": bool(self._fields_table.cellWidget(row, 6).isChecked()),
+                "use_distinct": bool(self._fields_table.cellWidget(row, 7).isChecked()),
                 "position": self._field_positions.get(row, row),
             }
             if filter_by_edit and filter_by_edit.text().strip():
@@ -434,3 +452,13 @@ class LayerConfigDialog(QDialog):
         idx = combo.findText(selected)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         table.setCellWidget(row, 2, combo)
+
+    def _set_input_type_combo_at_row(self, table, row: int, value: str) -> None:
+        combo = QComboBox()
+        combo.addItem("text field")
+        combo.addItem("checkbox")
+        combo.addItem("dropdown")
+        selected = (value or "text field").strip().lower()
+        idx = combo.findText(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        table.setCellWidget(row, 3, combo)

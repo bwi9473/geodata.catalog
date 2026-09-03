@@ -684,6 +684,7 @@ class LayerToolboxService:
         return True
 
     def add_interactive_svg_marker(self, point, iface, svg_path: str) -> bool:
+        self._logger.info(f"Interactive marker add requested with svg_path='{svg_path}'.")
         if self._project is None:
             self._logger.warning("Cannot add marker: QGIS project is unavailable.")
             return False
@@ -693,12 +694,15 @@ class LayerToolboxService:
 
         canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
         marker_layer = self._find_helper_layer("", self.INTERACTIVE_MARKER_KIND)
+        self._logger.info(f"Interactive marker existing layer found={marker_layer is not None}.")
 
         if marker_layer is None:
             marker_layer = self._create_interactive_marker_layer(canvas)
             if marker_layer is None:
                 return False
-            self._project.addMapLayer(marker_layer)
+            if not self._add_interactive_marker_layer(marker_layer):
+                return False
+            self._logger.info("Interactive marker layer created and added to the project.")
 
         feature = QgsFeature()
         feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(point.x(), point.y())))
@@ -709,7 +713,8 @@ class LayerToolboxService:
             return False
 
         self._clear_marker_features(marker_layer)
-        provider.addFeatures([feature])
+        added = provider.addFeatures([feature])
+        self._logger.info(f"Interactive marker feature add result={added}.")
         marker_layer.updateExtents()
         self._apply_interactive_marker_style(marker_layer, svg_path)
         self._save_interactive_marker(point, canvas)
@@ -720,23 +725,46 @@ class LayerToolboxService:
         self._logger.info("Interactive SVG marker added to map.")
         return True
 
+    def _add_interactive_marker_layer(self, marker_layer) -> bool:
+        if self._project is None:
+            return False
+        try:
+            self._logger.info("Adding interactive marker layer to project.")
+            self._project.addMapLayer(marker_layer, False)
+            root = self._project.layerTreeRoot() if hasattr(self._project, "layerTreeRoot") else None
+            if root is not None and hasattr(root, "insertLayer"):
+                root.insertLayer(0, marker_layer)
+                self._logger.info("Interactive marker layer inserted at top of layer tree.")
+            else:
+                self._project.addMapLayer(marker_layer)
+                self._logger.info("Interactive marker layer added via default project insertion.")
+            return True
+        except Exception as exc:
+            self._logger.warning(f"Failed to add interactive marker layer: {exc}")
+            return False
+
     def has_saved_interactive_marker(self) -> bool:
         marker_data = self._load_saved_interactive_marker_data()
         return marker_data is not None
 
     def restore_saved_interactive_marker(self, iface, svg_path: str) -> bool:
+        self._logger.info("Stored interactive marker restore requested.")
         marker_data = self._load_saved_interactive_marker_data()
         if marker_data is None:
+            self._logger.warning("No stored interactive marker data found.")
             return False
         if QgsPointXY is None:
+            self._logger.warning("Cannot restore stored interactive marker: QgsPointXY is unavailable.")
             return False
 
         point = self._point_from_saved_marker(marker_data, iface)
         if point is None:
+            self._logger.warning("Cannot restore stored interactive marker: stored marker point is invalid.")
             return False
         return self.add_interactive_svg_marker(point=point, iface=iface, svg_path=svg_path)
 
     def reset_saved_interactive_marker(self, iface) -> bool:
+        self._logger.info("Interactive marker reset requested.")
         cleared = self._remove_interactive_marker_layer()
         removed_setting = self._clear_saved_interactive_marker_data()
 

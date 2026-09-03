@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from geodata_catalog.exceptions import GeoDataCatalogException
 from geodata_catalog.logging_utils import PluginLogger
 from geodata_catalog.metadata.datasource_repository import DatasourceRepository
@@ -95,6 +97,8 @@ class GeoDataCatalogPlugin:
             on_loadable_layers_requested=self._show_loadable_layers_dock,
             on_focus_muac_requested=self._on_focus_muac_requested,
             on_save_layer_view_requested=self._on_save_layer_view_from_toolbar,
+            on_place_marker_requested=self._on_place_marker_requested,
+            on_reset_marker_requested=self._on_reset_marker_requested,
         )
 
     def initGui(self) -> None:
@@ -263,6 +267,23 @@ class GeoDataCatalogPlugin:
 
     def _on_focus_muac_requested(self) -> None:
         self._layer_toolbox_service.focus_muac_on_canvas(self.iface)
+
+    def _on_place_marker_requested(self) -> bool:
+        self._logger.info("Geometry toolbar requested stored interactive marker display.")
+        result = self._layer_toolbox_service.restore_saved_interactive_marker(
+            iface=self.iface,
+            svg_path=str(self._interactive_marker_svg_path()),
+        )
+        self._logger.info(f"Geometry toolbar stored marker display result={result}.")
+        return result
+
+    def _on_reset_marker_requested(self) -> None:
+        self._logger.info("Geometry toolbar requested interactive marker reset.")
+        self._layer_toolbox_service.reset_saved_interactive_marker(self.iface)
+
+    @staticmethod
+    def _interactive_marker_svg_path() -> Path:
+        return Path(__file__).resolve().parent / "resources" / "interactive_map_marker.svg"
 
     def _ensure_layer_panel_filter_action(self) -> None:
         """Register quick search action and hook into layer panel context menu events."""
@@ -1046,7 +1067,12 @@ class GeoDataCatalogPlugin:
         distinct_cols: set[str] = {
             col_def.get("name", "")
             for col_def in searchable_columns
-            if col_def.get("name") and col_def.get("use_distinct") and col_def.get("name") in layer_field_names
+            if col_def.get("name")
+            and (
+                col_def.get("use_distinct")
+                or (str(col_def.get("input_type", "")).strip().lower() == "dropdown")
+            )
+            and col_def.get("name") in layer_field_names
         }
         distinct_cols.discard("")
 

@@ -46,7 +46,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
         svg_marker_path="C:/symbols/radar.svg",
         enable_fl_filter=False,
         field_columns=[
-            {"name": "STATUS", "label": "Status", "type": "varchar", "search": True},
+            {"name": "STATUS", "label": "Status", "type": "varchar", "input_type": "dropdown", "search": True},
             {"name": "ID", "label": "ID", "type": "numeric", "export": True, "key": True},
         ],
         key_column="ID",
@@ -60,6 +60,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
     assert loaded.svg_marker_path == "C:/symbols/radar.svg"
     assert loaded.enable_fl_filter is False
     assert loaded.field_columns[0]["search"] is True
+    assert loaded.searchable_columns[0]["input_type"] == "dropdown"
     assert loaded.field_columns[1]["export"] is True
     assert loaded.key_column == "ID"
     payload = json.loads(repo_file.read_text(encoding="utf-8"))
