@@ -383,6 +383,7 @@ class GeometryToolbar:
         on_loadable_layers_requested: Callable[[], None] | None = None,
         on_focus_muac_requested: Callable[[], None] | None = None,
         on_save_layer_view_requested: Callable[[], None] | None = None,
+        on_copy_layer_filter_requested: Callable[[], None] | None = None,
         on_place_marker_requested: Callable[[], bool] | None = None,
         on_reset_marker_requested: Callable[[], None] | None = None,
     ) -> None:
@@ -391,6 +392,7 @@ class GeometryToolbar:
         self._on_loadable_layers_requested = on_loadable_layers_requested
         self._on_focus_muac_requested = on_focus_muac_requested
         self._on_save_layer_view_requested = on_save_layer_view_requested
+        self._on_copy_layer_filter_requested = on_copy_layer_filter_requested
         self._on_place_marker_requested = on_place_marker_requested
         self._on_reset_marker_requested = on_reset_marker_requested
         self._toolbar = None
@@ -398,6 +400,7 @@ class GeometryToolbar:
         self._loadable_layers_action: QAction | None = None
         self._focus_muac_action: QAction | None = None
         self._save_layer_view_action: QAction | None = None
+        self._copy_layer_filter_action: QAction | None = None
         self._place_marker_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
         self._marker_visible = False
@@ -456,6 +459,15 @@ class GeometryToolbar:
         self._save_layer_view_action.triggered.connect(self._emit_save_layer_view_requested)
         self._toolbar.addAction(self._save_layer_view_action)
 
+        self._copy_layer_filter_action = QAction(
+            self._copy_layer_filter_icon(),
+            "Apply filter to another layer",
+            self._iface.mainWindow(),
+        )
+        self._copy_layer_filter_action.setToolTip("Copy the current filter from one layer to another")
+        self._copy_layer_filter_action.triggered.connect(self._emit_copy_layer_filter_requested)
+        self._toolbar.addAction(self._copy_layer_filter_action)
+
         self._focus_muac_action = QAction(
             self._focus_muac_icon(),
             "Focus MUAC",
@@ -502,6 +514,7 @@ class GeometryToolbar:
         self._loadable_layers_action = None
         self._focus_muac_action = None
         self._save_layer_view_action = None
+        self._copy_layer_filter_action = None
         self._place_marker_action = None
         self._marker_visible = False
 
@@ -533,6 +546,13 @@ class GeometryToolbar:
                 return icon
         return QIcon(":/images/themes/default/mActionFileSave.svg")
 
+    def _copy_layer_filter_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionEditCopy.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionEditCopy.svg")
+
     def _place_marker_icon(self) -> QIcon:
         if QgsApplication is not None:
             icon = QgsApplication.getThemeIcon("/mActionCapturePoint.svg")
@@ -551,6 +571,10 @@ class GeometryToolbar:
     def _emit_save_layer_view_requested(self, _checked: bool = False) -> None:
         if self._on_save_layer_view_requested is not None:
             self._on_save_layer_view_requested()
+
+    def _emit_copy_layer_filter_requested(self, _checked: bool = False) -> None:
+        if self._on_copy_layer_filter_requested is not None:
+            self._on_copy_layer_filter_requested()
 
     def _map_canvas(self):
         if self._iface is None:

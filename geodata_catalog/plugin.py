@@ -29,6 +29,7 @@ from geodata_catalog.services.layer_toolbox_service import LayerToolboxService
 from geodata_catalog.services.qgis_loader_service import QgisLoaderService
 from geodata_catalog.services.style_service import StyleService
 from geodata_catalog.ui.catalog_dockwidget import CatalogDockWidget
+from geodata_catalog.ui.copy_layer_filter_dialog import CopyLayerFilterDialog
 from geodata_catalog.ui.datasource_dialog import DatasourceDialog
 from geodata_catalog.ui.geometry_toolbar import GeometryToolbar
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
@@ -90,6 +91,7 @@ class GeoDataCatalogPlugin:
         self._loaded_layer_keys: set[str] = set()
         self._custom_view_docks: list[LayerCustomViewDock] = []
         self._layer_panel_filter_action: QAction | None = None
+        self._layer_panel_copy_filter_action: QAction | None = None
         self._layer_groupings: dict[str, dict[str, str]] = {}
         self._geometry_toolbar = GeometryToolbar(
             self.iface,
@@ -97,6 +99,7 @@ class GeoDataCatalogPlugin:
             on_loadable_layers_requested=self._show_loadable_layers_dock,
             on_focus_muac_requested=self._on_focus_muac_requested,
             on_save_layer_view_requested=self._on_save_layer_view_from_toolbar,
+            on_copy_layer_filter_requested=self._on_copy_layer_filter_from_toolbar,
             on_place_marker_requested=self._on_place_marker_requested,
             on_reset_marker_requested=self._on_reset_marker_requested,
         )
@@ -296,6 +299,8 @@ class GeoDataCatalogPlugin:
 
         self._layer_panel_filter_action = QAction("Quick Search", self.iface.mainWindow())
         self._layer_panel_filter_action.triggered.connect(self._on_open_layer_filter)
+        self._layer_panel_copy_filter_action = QAction("Apply Filter to Another Layer", self.iface.mainWindow())
+        self._layer_panel_copy_filter_action.triggered.connect(self._on_copy_layer_filter_from_toolbar)
 
         if hasattr(layer_tree_view, "contextMenuAboutToShow"):
             try:
@@ -365,6 +370,10 @@ class GeoDataCatalogPlugin:
             geo_menu.addAction(quick_search_action)
 
         if layer_def is not None:
+            copy_filter_action = getattr(self, "_layer_panel_copy_filter_action", None)
+            if copy_filter_action is not None:
+                geo_menu.addAction(copy_filter_action)
+
             save_view_action = QAction("Save Layer View", geo_menu)
             save_view_action.triggered.connect(
                 lambda _checked=False, current_layer=layer, definition=layer_def: self._save_layer_view(
@@ -667,6 +676,57 @@ class GeoDataCatalogPlugin:
             return
         self._persist_layer_view(layer, definition, dialog.view_name())
 
+    def _on_copy_layer_filter_from_toolbar(self) -> None:
+        self._open_copy_layer_filter_dialog(self._active_layer())
+
+    def _on_copy_layer_filter_from_layer(self, layer) -> None:
+        self._open_copy_layer_filter_dialog(layer)
+
+    def _open_copy_layer_filter_dialog(self, selected_from_layer=None) -> None:
+        choices = self._loaded_catalog_layer_choices()
+        if len(choices) < 2:
+            self._show_error("Apply Filter to Layer", "At least two loaded catalog layers are required.")
+            return
+
+        selected_key = ""
+        selected_definition = self._find_layer_definition_for_qgis_layer(selected_from_layer) if selected_from_layer is not None else None
+        if selected_definition is not None:
+            selected_key = selected_definition.key()
+
+        dialog = CopyLayerFilterDialog(self.iface.mainWindow(), choices, selected_key)
+        if self._run_dialog(dialog) != self._accepted_code(dialog):
+            return
+
+        from_datasource_id, from_layer_name, _from_display_name = dialog.selected_from_layer()
+        to_datasource_id, to_layer_name, _to_display_name = dialog.selected_to_layer()
+        try:
+            from_definition = self._resolve_layer(from_datasource_id, from_layer_name)
+            to_definition = self._resolve_layer(to_datasource_id, to_layer_name)
+        except GeoDataCatalogException as exc:
+            self._show_error("Apply Filter to Layer", str(exc))
+            return
+
+        from_layer = self._find_qgis_layer(from_definition)
+        to_layer = self._find_qgis_layer(to_definition)
+        if from_layer is None or to_layer is None:
+            self._show_error("Apply Filter to Layer", "Both source and target layers must be loaded.")
+            return
+
+        layer_filter = self._deserialize_layer_filter(self._serialize_layer_filter(from_layer, from_definition))
+        layer_filter = self._normalize_filter_fields_for_layer(to_layer, layer_filter)
+        missing_fields = self._missing_filter_fields(to_layer, layer_filter)
+        if missing_fields:
+            self._show_error(
+                "Apply Filter to Layer",
+                f"The target layer is missing fields used by the filter: {', '.join(missing_fields)}.",
+            )
+            return
+
+        self._apply_layer_filter(to_layer, layer_filter)
+        self._logger.info(
+            f"Copied layer filter from '{from_definition.display_name}' to '{to_definition.display_name}'."
+        )
+
     def _save_layer_view(self, layer, definition: LayerDefinition) -> None:
         existing_names = [
             view.name
@@ -770,6 +830,19 @@ class GeoDataCatalogPlugin:
             )
         except Exception:
             return None
+
+    def _loaded_catalog_layer_choices(self) -> list[tuple[str, str, str]]:
+        choices: list[tuple[str, str, str]] = []
+        for datasource in self._datasource_service.list_datasources():
+            try:
+                layers = self._layer_service.discover_layers(datasource)
+            except GeoDataCatalogException:
+                layers = self._fallback_layers_for_unavailable_datasource(datasource)
+            self._layer_cache[datasource.id] = {layer.layer_name: layer for layer in layers}
+            for layer in layers:
+                if self._find_qgis_layer(layer) is not None:
+                    choices.append((layer.datasource_id, layer.layer_name, layer.display_name))
+        return sorted(choices, key=lambda item: item[2].casefold())
 
     @staticmethod
     def _qgis_layer_id(layer) -> str:
@@ -1196,6 +1269,41 @@ class GeoDataCatalogPlugin:
             if str(name).casefold() == wanted:
                 return str(name)
         return field_name
+
+    def _normalize_filter_fields_for_layer(self, layer, layer_filter: LayerFilter) -> LayerFilter:
+        return LayerFilter(
+            flight_level=self._normalize_flight_level_fields(layer, layer_filter.flight_level),
+            attributes=[
+                AttributeSearchFilter(
+                    column=self._resolve_layer_field_name(layer, attribute.column),
+                    value=attribute.value,
+                    label=attribute.label,
+                    data_type=attribute.data_type,
+                )
+                for attribute in layer_filter.attributes
+            ],
+        )
+
+    def _missing_filter_fields(self, layer, layer_filter: LayerFilter) -> list[str]:
+        if not hasattr(layer, "fields"):
+            return []
+        try:
+            field_names = {str(name) for name in layer.fields().names()}
+        except Exception:
+            return []
+
+        required_fields: list[str] = []
+        if layer_filter.flight_level.enabled:
+            required_fields.extend([
+                layer_filter.flight_level.lower_field,
+                layer_filter.flight_level.upper_field,
+            ])
+        required_fields.extend(
+            attribute.column
+            for attribute in layer_filter.attributes
+            if attribute.column and attribute.value.strip()
+        )
+        return [field for field in dict.fromkeys(required_fields) if field not in field_names]
 
     def _active_layer(self):
         if self.iface is None:
