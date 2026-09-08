@@ -63,7 +63,7 @@ class LoadableLayersDockWidget(QDockWidget):
         search_row.addWidget(self.filter_edit, stretch=1)
         self.filter_button = QToolButton()
         self.filter_button.setIcon(QIcon(":/images/themes/default/mActionFilter.svg"))
-        self.filter_button.setToolTip("Alle categorieen in- of uitklappen")
+        self.filter_button.setToolTip("Expand or collapse all categories")
         self.filter_button.clicked.connect(self._toggle_categories)
         search_row.addWidget(self.filter_button)
         root.addLayout(search_row)
@@ -183,7 +183,7 @@ class LoadableLayersDockWidget(QDockWidget):
 
                 layer_key = layer.key()
                 item = QTreeWidgetItem(category_item, [layer.display_name])
-                item.setIcon(0, self._layer_icon(layer))
+                item.setIcon(0, self._datasource_icon(source_type))
                 item.setData(0, USER_ROLE, (datasource_id, layer.layer_name, layer_key, loadable))
                 item.setToolTip(
                     0,
@@ -226,7 +226,6 @@ class LoadableLayersDockWidget(QDockWidget):
                     self.layers_tree.setItemWidget(view_item, 0, view_row)
 
             category_item.setExpanded(True)
-            category_item.setText(0, f"{category.upper()}   ({category_item.childCount()})")
 
         self._updating_tree = False
         self._apply_filter(self.filter_edit.text())
@@ -306,6 +305,17 @@ class LoadableLayersDockWidget(QDockWidget):
             return QIcon(":/images/themes/default/mIconLineLayer.svg")
         return QIcon(":/images/themes/default/mIconPolygonLayer.svg")
 
+    @staticmethod
+    def _datasource_icon(source_type: str) -> QIcon:
+        normalized_type = str(source_type or "").strip().casefold()
+        if normalized_type == "oracle":
+            return QIcon(":/images/themes/default/mIconDbSchema.svg")
+        if normalized_type in {"geojson", "kml"}:
+            return QIcon(":/images/themes/default/mIconFile.svg")
+        if normalized_type == "rest":
+            return QIcon(":/images/themes/default/mActionAddWmsLayer.svg")
+        return QIcon(":/images/themes/default/mActionAddLayer.svg")
+
     def _apply_filter(self, text: str) -> None:
         needle = text.strip().casefold()
         for index in range(self.layers_tree.topLevelItemCount()):
@@ -313,7 +323,11 @@ class LoadableLayersDockWidget(QDockWidget):
             visible_children = 0
             for child_index in range(category_item.childCount()):
                 item = category_item.child(child_index)
-                visible = not needle or needle in item.text(0).casefold() or needle in item.toolTip(0).casefold()
+                visible = (
+                    not needle
+                    or needle in item.text(0).casefold()
+                    or needle in item.toolTip(0).casefold()
+                )
                 item.setHidden(not visible)
                 visible_children += int(visible)
             category_item.setHidden(visible_children == 0)

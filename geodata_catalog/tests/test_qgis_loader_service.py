@@ -4,14 +4,16 @@ from geodata_catalog.services.qgis_loader_service import QgisLoaderService
 
 
 class FakeLayer:
-    def __init__(self, valid=True):
+    def __init__(self, valid=True, geometry_type=None):
         self._valid = valid
+        self._geometry_type = geometry_type
         self.crs = None
         self.subset_string = None
         self.assigned_name = None
         self.labels_enabled = False
         self.labeling = None
         self.repaint_calls = 0
+        self.opacity = None
 
     def isValid(self):
         return self._valid
@@ -36,6 +38,12 @@ class FakeLayer:
 
     def triggerRepaint(self):
         self.repaint_calls += 1
+
+    def geometryType(self):
+        return self._geometry_type
+
+    def setOpacity(self, opacity):
+        self.opacity = opacity
 
 
 class FakeConnector:
@@ -120,6 +128,35 @@ def test_loader_applies_configured_svg_marker():
     service.load_layer(layer_definition, FakeConnector(FakeLayer(valid=True)))
 
     assert style_service.svg_marker[1] == "C:/symbols/topo_airport.svg"
+
+
+class _FakeWkbTypes:
+    PointGeometry = 0
+    PolygonGeometry = 2
+
+
+def test_loader_sets_polygon_opacity_after_applying_style(monkeypatch):
+    import geodata_catalog.services.qgis_loader_service as loader_module
+
+    monkeypatch.setattr(loader_module, "QgsWkbTypes", _FakeWkbTypes)
+    style_service = FakeStyleService()
+    service = QgisLoaderService(style_service, FakeLogger(), project=FakeProject())
+    layer_definition = LayerDefinition(
+        datasource_id="ds",
+        layer_name="airspace",
+        display_name="Airspace",
+        provider_key="ogr",
+        provider_uri="path",
+        default_style_file="style.qml",
+    )
+
+    layer = service.load_layer(
+        layer_definition,
+        FakeConnector(FakeLayer(valid=True, geometry_type=_FakeWkbTypes.PolygonGeometry)),
+    )
+
+    assert style_service.applied == (layer, "style.qml")
+    assert layer.opacity == 0.3
 
 
 def test_loader_rejects_invalid_layer():

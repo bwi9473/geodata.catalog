@@ -37,14 +37,25 @@ from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
 from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
 
-from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QAction, QApplication, QMenu, QMessageBox
+from qgis.PyQt.QtCore import Qt, QVariant
+from qgis.PyQt.QtWidgets import QAction, QApplication, QFileDialog, QMenu, QMessageBox
 
 try:
-    from qgis.core import QgsMapLayerType, QgsProject
+    from qgis.core import (
+        QgsFeature,
+        QgsField,
+        QgsMapLayerType,
+        QgsProject,
+        QgsVectorFileWriter,
+        QgsVectorLayer,
+    )
 except ImportError:  # pragma: no cover
+    QgsFeature = None
+    QgsField = None
     QgsMapLayerType = None
     QgsProject = None
+    QgsVectorFileWriter = None
+    QgsVectorLayer = None
 
 try:
     from qgis.gui import QgsLayerTreeViewContextMenuProvider
@@ -96,6 +107,7 @@ class GeoDataCatalogPlugin:
         self._geometry_toolbar = GeometryToolbar(
             self.iface,
             self._logger,
+            on_configuration_requested=self._show_dock,
             on_loadable_layers_requested=self._show_loadable_layers_dock,
             on_focus_muac_requested=self._on_focus_muac_requested,
             on_save_layer_view_requested=self._on_save_layer_view_from_toolbar,
@@ -106,12 +118,12 @@ class GeoDataCatalogPlugin:
 
     def initGui(self) -> None:
         try:
-            self._open_catalog_action = QAction("Open GeoData Explorer", self.iface.mainWindow())
+            self._open_catalog_action = QAction("Open Data Source Configuration", self.iface.mainWindow())
             self._open_catalog_action.triggered.connect(self._show_dock)
             self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
 
             self._geometry_toolbar.initGui()
-            self._show_dock()
+            self._ensure_layer_panel_filter_action()
             self._logger.info("GeoData Catalog initialized")
         except Exception as exc:
             self._logger.error(f"initGui failed: {exc}")
@@ -144,9 +156,14 @@ class GeoDataCatalogPlugin:
             self._dock_widget.delete_source_requested.connect(self._on_delete_source)
             self._dock_widget.refresh_requested.connect(self._on_refresh_source)
             self._dock_widget.edit_layer_config_requested.connect(self._on_edit_layer_config)
-            self.iface.addDockWidget(self._dock_area(), self._dock_widget)
-            self._try_tabify_with_core_docks(self._dock_widget)
+            self._dock_widget.export_requested.connect(self._export_layer_configuration)
+            self._configure_as_floating_window(self._dock_widget)
+        self._apply_configured_theme(self._dock_widget)
+        self._size_configuration_window(self._dock_widget)
         self._dock_widget.show()
+        self._dock_widget.raise_()
+        self._dock_widget.activateWindow()
+        self._center_on_map_canvas(self._dock_widget)
         self._refresh_datasources()
         self._ensure_layer_panel_filter_action()
 
@@ -197,6 +214,23 @@ class GeoDataCatalogPlugin:
 
         if hasattr(widget, "setMinimumSize"):
             widget.setMinimumSize(380, 520)
+        widget.resize(width, height)
+
+    def _size_configuration_window(self, widget) -> None:
+        if not hasattr(widget, "resize"):
+            return
+        available_geometry = self._available_screen_geometry(widget)
+        target_geometry = self._data_panel_target_geometry()
+        target_width = target_geometry.width() if target_geometry is not None else available_geometry.width()
+        target_height = target_geometry.height() if target_geometry is not None else available_geometry.height()
+
+        width = max(600, min(820, int(target_width * 0.48)))
+        height = max(760, min(980, int(target_height * 0.9)))
+        width = min(width, max(480, available_geometry.width() - 48))
+        height = min(height, max(620, available_geometry.height() - 48))
+
+        if hasattr(widget, "setMinimumSize"):
+            widget.setMinimumSize(560, 700)
         widget.resize(width, height)
 
     def _center_on_map_canvas(self, widget) -> None:
@@ -257,6 +291,89 @@ class GeoDataCatalogPlugin:
         apply_theme = getattr(widget, "apply_theme", None)
         if callable(apply_theme):
             apply_theme(self._load_ui_colors())
+
+    def _export_layer_configuration(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self.iface.mainWindow(),
+            "Export Layer Configuration",
+            str(Path.home() / "layer_configuration.xlsx"),
+            "Excel Files (*.xlsx)",
+        )
+        if not file_path:
+            return
+
+        target_path = Path(file_path)
+        if target_path.suffix.lower() != ".xlsx":
+            target_path = target_path.with_suffix(".xlsx")
+
+        try:
+            self._write_layer_configuration_export(target_path)
+            QMessageBox.information(
+                self.iface.mainWindow(),
+                "Export Layer Configuration",
+                f"Exported layer configuration to:\n{target_path}",
+            )
+        except Exception as exc:
+            self._logger.error(f"Layer configuration export failed: {exc}")
+            self._show_error("Export Layer Configuration", str(exc))
+
+    def _write_layer_configuration_export(self, target_path: Path) -> None:
+        if any(value is None for value in (QgsFeature, QgsField, QgsVectorFileWriter, QgsVectorLayer)):
+            raise RuntimeError("The QGIS Excel export service is not available in this runtime.")
+
+        datasource_names = {
+            datasource.id: datasource.name
+            for datasource in self._datasource_service.list_datasources()
+        }
+        fields = [
+            ("Layer name", "layer_name"),
+            ("Category", "category"),
+            ("Field name", "field_name"),
+            ("Source name", "source_name"),
+            ("Enable flight sector field", "enable_flight_sector_field"),
+            ("Aantal layer attributen", "attribute_count"),
+            ("Key column", "key_column"),
+        ]
+        layer = QgsVectorLayer("None", "Layer configuration", "memory")
+        provider = layer.dataProvider()
+        provider.addAttributes([QgsField(label, QVariant.String) for label, _key in fields])
+        layer.updateFields()
+
+        features = []
+        for config in self._layer_config_repository.list_all():
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes(
+                [
+                    str(value)
+                    for value in (
+                        config.layername or config.layer_name,
+                        config.category_label or "",
+                        config.label_column or "",
+                        datasource_names.get(config.datasource_id, config.datasource_id),
+                        "Yes" if config.enable_fl_filter else "No",
+                        len(config.field_columns),
+                        config.key_column or "",
+                    )
+                ]
+            )
+            features.append(feature)
+        provider.addFeatures(features)
+
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "XLSX"
+        options.fileEncoding = "UTF-8"
+        options.layerName = "Layer configuration"
+        transform_context = QgsProject.instance().transformContext()
+        result = QgsVectorFileWriter.writeAsVectorFormatV3(
+            layer,
+            str(target_path),
+            transform_context,
+            options,
+        )
+        error_code = result[0] if isinstance(result, tuple) else result
+        if error_code != QgsVectorFileWriter.NoError:
+            detail = str(result[1]) if isinstance(result, tuple) and len(result) > 1 else ""
+            raise RuntimeError(detail or "QGIS could not create the Excel file.")
 
     def _on_basemap_selected(self, basemap_name: str) -> None:
         if not basemap_name:

@@ -380,6 +380,7 @@ class GeometryToolbar:
         self,
         iface,
         logger: PluginLogger,
+        on_configuration_requested: Callable[[], None] | None = None,
         on_loadable_layers_requested: Callable[[], None] | None = None,
         on_focus_muac_requested: Callable[[], None] | None = None,
         on_save_layer_view_requested: Callable[[], None] | None = None,
@@ -389,6 +390,7 @@ class GeometryToolbar:
     ) -> None:
         self._iface = iface
         self._logger = logger
+        self._on_configuration_requested = on_configuration_requested
         self._on_loadable_layers_requested = on_loadable_layers_requested
         self._on_focus_muac_requested = on_focus_muac_requested
         self._on_save_layer_view_requested = on_save_layer_view_requested
@@ -397,6 +399,7 @@ class GeometryToolbar:
         self._on_reset_marker_requested = on_reset_marker_requested
         self._toolbar = None
         self._identify_action: QAction | None = None
+        self._configuration_action: QAction | None = None
         self._loadable_layers_action: QAction | None = None
         self._focus_muac_action: QAction | None = None
         self._save_layer_view_action: QAction | None = None
@@ -440,6 +443,15 @@ class GeometryToolbar:
         self._identify_action.toggled.connect(self._on_identify_toggled)
         self._toolbar.addAction(self._identify_action)
         self._toolbar.addSeparator()
+
+        self._configuration_action = QAction(
+            self._configuration_icon(),
+            "Open data source configuration",
+            self._iface.mainWindow(),
+        )
+        self._configuration_action.setToolTip("Open data source configuration")
+        self._configuration_action.triggered.connect(self._emit_configuration_requested)
+        self._toolbar.addAction(self._configuration_action)
 
         self._loadable_layers_action = QAction(
             self._loadable_layers_icon(),
@@ -511,6 +523,7 @@ class GeometryToolbar:
             self._toolbar.deleteLater()
             self._toolbar = None
         self._identify_action = None
+        self._configuration_action = None
         self._loadable_layers_action = None
         self._focus_muac_action = None
         self._save_layer_view_action = None
@@ -532,12 +545,19 @@ class GeometryToolbar:
                 return icon
         return QIcon(":/images/themes/default/mActionAddLayer.svg")
 
+    def _configuration_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionOptions.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionOptions.svg")
+
     def _focus_muac_icon(self) -> QIcon:
         if QgsApplication is not None:
             icon = QgsApplication.getThemeIcon("/mActionZoomToLayer.svg")
             if not icon.isNull():
                 return icon
-        return QIcon(":/images/themes/default/mActionZoomToLayer.svg")
+        return QIcon(":/images/themes/default/mActionZoomToArea.svg")
 
     def _save_layer_view_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -563,6 +583,10 @@ class GeometryToolbar:
     def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
         if self._on_loadable_layers_requested is not None:
             self._on_loadable_layers_requested()
+
+    def _emit_configuration_requested(self, _checked: bool = False) -> None:
+        if self._on_configuration_requested is not None:
+            self._on_configuration_requested()
 
     def _emit_focus_muac_requested(self, _checked: bool = False) -> None:
         if self._on_focus_muac_requested is not None:

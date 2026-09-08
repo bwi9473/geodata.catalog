@@ -12,6 +12,7 @@ try:
         QgsProject,
         QgsTextFormat,
         QgsVectorLayerSimpleLabeling,
+        QgsWkbTypes,
     )
 except ImportError:  # pragma: no cover
     QgsCoordinateReferenceSystem = None
@@ -19,10 +20,13 @@ except ImportError:  # pragma: no cover
     QgsProject = None
     QgsTextFormat = None
     QgsVectorLayerSimpleLabeling = None
+    QgsWkbTypes = None
 
 
 class QgisLoaderService:
     """Handles loading and registration of layers into QGIS project."""
+
+    POLYGON_OPACITY = 0.3
 
     def __init__(
         self,
@@ -88,6 +92,7 @@ class QgisLoaderService:
         self._apply_labels(layer, layer_definition.label_column)
         self._style_service.apply_default_style(layer, layer_definition.default_style_file)
         self._style_service.apply_svg_marker(layer, layer_definition.metadata.get("svg_marker_path"))
+        self._apply_polygon_opacity(layer)
         self._tag_layer_source(layer, layer_definition)
 
         if self._project is None:  # pragma: no cover
@@ -129,6 +134,15 @@ class QgisLoaderService:
         if hasattr(layer, "triggerRepaint"):
             layer.triggerRepaint()
         self._logger.info(f"Applied label column '{label_column}' to layer '{layer.name()}'")
+
+    def _apply_polygon_opacity(self, layer) -> None:
+        if QgsWkbTypes is None or not hasattr(layer, "geometryType") or not hasattr(layer, "setOpacity"):
+            return
+        if layer.geometryType() != QgsWkbTypes.PolygonGeometry:
+            return
+        layer.setOpacity(self.POLYGON_OPACITY)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
 
     def _tag_layer_source(self, layer, layer_definition) -> None:
         """Store source identifiers as custom properties so the toolbox can look up layer config."""

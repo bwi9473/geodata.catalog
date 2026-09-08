@@ -61,13 +61,14 @@ class CatalogDockWidget(QDockWidget):
     """Developer dock for managing datasources and layer configuration."""
 
     add_source_requested = pyqtSignal()
+    export_requested = pyqtSignal()
     edit_source_requested = pyqtSignal(str)
     delete_source_requested = pyqtSignal(str)
     refresh_requested = pyqtSignal(str)
     edit_layer_config_requested = pyqtSignal(str, str)  # datasource_id, layer_name
 
     def __init__(self, parent=None) -> None:
-        super().__init__("GeoData Explorer", parent)
+        super().__init__("Data Source Configuration", parent)
         self._datasource_items: dict[str, QTreeWidgetItem] = {}
         self._all_layers_mode = False
         self._build_ui()
@@ -102,12 +103,14 @@ class CatalogDockWidget(QDockWidget):
         self.edit_btn = QPushButton("Edit Source")
         self.delete_btn = QPushButton("Delete Source")
         self.refresh_btn = QPushButton("Refresh")
+        self.export_btn = QPushButton("Export to Excel")
         self.configure_btn = QPushButton("Configure")
 
         self.add_btn.clicked.connect(self.add_source_requested.emit)
         self.edit_btn.clicked.connect(self._emit_edit)
         self.delete_btn.clicked.connect(self._emit_delete)
         self.refresh_btn.clicked.connect(self._emit_refresh)
+        self.export_btn.clicked.connect(self.export_requested.emit)
         self.configure_btn.clicked.connect(self._emit_edit_layer_config)
 
         source_buttons.addWidget(self.add_btn)
@@ -117,12 +120,40 @@ class CatalogDockWidget(QDockWidget):
         explore_layout.addLayout(source_buttons)
 
         layer_buttons = QHBoxLayout()
+        layer_buttons.addWidget(self.export_btn)
         layer_buttons.addWidget(self.configure_btn)
         explore_layout.addLayout(layer_buttons)
 
         root.addWidget(explore_group)
 
         self.setWidget(body)
+
+    def apply_theme(self, ui_colors: dict[str, str]) -> None:
+        primary = str(ui_colors.get("primary", "#59A947"))
+        primary_text = str(ui_colors.get("primary_text", "#FFFFFF"))
+        panel_background = str(ui_colors.get("panel_background", "#F7F9FC"))
+        window_background = str(ui_colors.get("window_background", "#FFFFFF"))
+        border = str(ui_colors.get("border", "#D7DEE8"))
+        text = str(ui_colors.get("text", "#1E293B"))
+        header_background = str(ui_colors.get("header_background", "#EEF3FA"))
+        header_text = str(ui_colors.get("header_text", "#0F172A"))
+        self.setStyleSheet(
+            "\n".join(
+                [
+                    f"QDockWidget {{ background: {window_background}; color: {text}; }}",
+                    f"QWidget {{ background: {window_background}; color: {text}; }}",
+                    f"QGroupBox {{ background: {panel_background}; color: {header_text}; border: 1px solid {border}; border-radius: 4px; margin-top: 12px; padding: 8px; font-weight: 700; }}",
+                    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }",
+                    f"QTreeWidget, QListWidget {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QTreeWidget::item, QListWidget::item {{ min-height: 30px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
+                    f"QTreeWidget::item:selected, QListWidget::item:selected {{ background: {primary}; color: {primary_text}; }}",
+                    f"QPushButton {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
+                    f"QPushButton:hover {{ border-color: {primary}; background: {header_background}; color: {header_text}; }}",
+                    f"QPushButton:pressed {{ background: {primary}; color: {primary_text}; }}",
+                    f"QPushButton:disabled {{ color: {border}; background: {panel_background}; }}",
+                ]
+            )
+        )
 
     def set_datasources(self, datasources: list[Datasource]) -> None:
         self.datasource_tree.clear()
