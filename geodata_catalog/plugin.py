@@ -321,8 +321,8 @@ class GeoDataCatalogPlugin:
         if any(value is None for value in (QgsFeature, QgsField, QgsVectorFileWriter, QgsVectorLayer)):
             raise RuntimeError("The QGIS Excel export service is not available in this runtime.")
 
-        datasource_names = {
-            datasource.id: datasource.name
+        datasources = {
+            datasource.id: datasource
             for datasource in self._datasource_service.list_datasources()
         }
         fields = [
@@ -341,6 +341,12 @@ class GeoDataCatalogPlugin:
 
         features = []
         for config in self._layer_config_repository.list_all():
+            datasource = datasources.get(config.datasource_id)
+            source_name = (
+                self._layer_config_export_source_label(datasource, config)
+                if datasource is not None
+                else config.layer_name
+            )
             feature = QgsFeature(layer.fields())
             feature.setAttributes(
                 [
@@ -349,7 +355,7 @@ class GeoDataCatalogPlugin:
                         config.layername or config.layer_name,
                         config.category_label or "",
                         config.label_column or "",
-                        datasource_names.get(config.datasource_id, config.datasource_id),
+                        source_name,
                         "Yes" if config.enable_fl_filter else "No",
                         len(config.field_columns),
                         config.key_column or "",
@@ -1056,6 +1062,15 @@ class GeoDataCatalogPlugin:
         if datasource.datasource_type is DatasourceType.REST:
             return str(datasource.config.get("url") or layer_def.provider_uri or layer_def.layer_name)
         return layer_def.layer_name
+
+    @staticmethod
+    def _layer_config_export_source_label(datasource: Datasource, config: "LayerConfig") -> str:
+        """Resolve the technical source identifier (e.g. schema.table) for the export."""
+        if datasource.datasource_type in {DatasourceType.GEOJSON, DatasourceType.KML}:
+            return str(datasource.config.get("path") or config.layer_name)
+        if datasource.datasource_type is DatasourceType.REST:
+            return str(datasource.config.get("url") or config.layer_name)
+        return config.layer_name
 
     def _discover_layer_fields(self, datasource_id: str, layer_name: str) -> list[dict[str, str]]:
         """Read the field schema from a connector without adding the layer to the project."""

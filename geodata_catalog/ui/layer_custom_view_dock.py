@@ -234,6 +234,11 @@ class LayerCustomViewWindow(QMainWindow):
         self._fl_upper_field_name = "fl_upper"
         self._preset_buttons: list[tuple[Any, int, int]] = []
 
+        self._quick_search_column_combo = None
+        self._quick_search_edit = None
+        self._quick_search_active_text = ""
+        self._quick_search_active_column: str | None = None
+
         self._attr_edits: dict[str, Any] = {}
         self._attr_combos: dict[str, Any] = {}
         self._attr_checks: dict[str, Any] = {}
@@ -252,6 +257,7 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._build_filter_panel(initial_filter)
         self._build_controls()
+        self._build_quick_search_row()
         self._build_table()
         self._apply_theme()
         self._apply_view_state()
@@ -612,7 +618,7 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._enabled_check = QCheckBox("Enable flight level filter")
         self._enabled_check.setChecked(True)
-        self._enabled_check.toggled.connect(lambda _checked: self._update_fl_controls_enabled())
+        self._enabled_check.toggled.connect(self._on_fl_enabled_toggled)
         fl_form.addRow(self._enabled_check)
 
         self._lower_spin = QSpinBox()
@@ -700,6 +706,71 @@ class LayerCustomViewWindow(QMainWindow):
         nav.addWidget(self._summary_label, stretch=1)
         self._root.addLayout(nav)
 
+    def _build_quick_search_row(self) -> None:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Search in results"))
+
+        self._quick_search_column_combo = QComboBox()
+        self._quick_search_column_combo.addItem("All columns", None)
+        for col in self._columns:
+            self._quick_search_column_combo.addItem(col.get("label", col["name"]), col["name"])
+
+        self._quick_search_edit = QLineEdit()
+        self._quick_search_edit.setPlaceholderText("Type text to search within the filtered result...")
+        self._quick_search_edit.returnPressed.connect(self._on_quick_search_clicked)
+
+        quick_search_btn = QPushButton("Search")
+        quick_search_btn.clicked.connect(self._on_quick_search_clicked)
+
+        self._quick_search_clear_btn = QPushButton("Clear")
+        self._quick_search_clear_btn.clicked.connect(self._on_quick_search_clear)
+
+        row.addWidget(self._quick_search_column_combo)
+        row.addWidget(self._quick_search_edit, stretch=1)
+        row.addWidget(quick_search_btn)
+        row.addWidget(self._quick_search_clear_btn)
+        self._root.addLayout(row)
+
+    def _on_quick_search_clicked(self) -> None:
+        self._quick_search_active_text = self._quick_search_edit.text().strip()
+        self._quick_search_active_column = (
+            self._quick_search_column_combo.currentData() if self._quick_search_column_combo is not None else None
+        )
+        self._current_page = 1
+        self._apply_view_state()
+
+    def _on_quick_search_clear(self) -> None:
+        if self._quick_search_edit is not None:
+            self._quick_search_edit.clear()
+        if self._quick_search_column_combo is not None:
+            self._quick_search_column_combo.setCurrentIndex(0)
+        self._quick_search_active_text = ""
+        self._quick_search_active_column = None
+        self._current_page = 1
+        self._apply_view_state()
+
+    def _quick_filtered_records(self) -> list[dict[str, object]]:
+        text = self._quick_search_active_text.strip().lower()
+        if not text:
+            return list(self._all_records)
+
+        col_name = self._quick_search_active_column
+        matches: list[dict[str, object]] = []
+        for record in self._all_records:
+            if col_name:
+                value = record.get(col_name)
+                haystack = "" if value is None else str(value)
+                if text in haystack.lower():
+                    matches.append(record)
+            else:
+                if any(
+                    text in str(value).lower()
+                    for key, value in record.items()
+                    if key != "__fid" and value is not None
+                ):
+                    matches.append(record)
+        return matches
+
     def _build_table(self) -> None:
         column_count = len(self._columns) + 1
         self._table = QTableWidget(0, column_count)
@@ -751,8 +822,10 @@ class LayerCustomViewWindow(QMainWindow):
         self._refresh_filter_toggle_buttons()
 
     def _refresh_filter_toggle_buttons(self) -> None:
-        fl_active = bool(self._toggle_fl_btn.isChecked())
-        attr_active = bool(self._toggle_attr_btn.isChecked())
+        fl_active = bool(
+            self._show_flight_level and self._enabled_check is not None and self._enabled_check.isChecked()
+        )
+        attr_active = self._has_active_attribute_filters()
 
         self._toggle_fl_btn.setText(
             f"Flight Levels ({'active' if fl_active else 'off'})"
@@ -764,6 +837,22 @@ class LayerCustomViewWindow(QMainWindow):
         active_count = int(fl_active) + int(attr_active)
         if hasattr(self, "_filter_panel") and self._filter_panel is not None:
             self._filter_panel.setTitle(f"Filter - {active_count} active")
+
+    def _has_active_attribute_filters(self) -> bool:
+        for edit in self._attr_edits.values():
+            if edit.text().strip():
+                return True
+        for col_name, checkbox in self._attr_checks.items():
+            if self._checkbox_filter_value(col_name, checkbox):
+                return True
+        for combo in self._attr_combos.values():
+            if self._normalized_filter_text(combo.currentText()):
+                return True
+        return False
+
+    def _on_fl_enabled_toggled(self, _checked: bool) -> None:
+        self._update_fl_controls_enabled()
+        self._refresh_filter_toggle_buttons()
 
     def _init_filter_state(self, initial_filter: LayerFilter | None) -> None:
         if initial_filter is None:
@@ -864,8 +953,8 @@ class LayerCustomViewWindow(QMainWindow):
 
             self._clear_map_selection()
         self._reload_records_from_layer()
-        self._current_page = 1
-        self._apply_view_state()
+        self._on_quick_search_clear()
+        self._refresh_filter_toggle_buttons()
 
     def _current_filter(self) -> LayerFilter:
         if self._show_flight_level and self._enabled_check is not None:
@@ -1399,15 +1488,21 @@ class LayerCustomViewWindow(QMainWindow):
         self._fill_table()
 
         total = len(self._all_records)
+        matched = len(self._quick_filtered_records())
         shown = len(self._current_records)
-        self._summary_label.setText(
-            f"Showing {shown} of {total} records - Page {self._current_page}/{total_pages}"
-        )
+        if self._quick_search_active_text.strip():
+            summary = (
+                f"Showing {shown} of {matched} matching records "
+                f"(filtered from {total}) - Page {self._current_page}/{total_pages}"
+            )
+        else:
+            summary = f"Showing {shown} of {total} records - Page {self._current_page}/{total_pages}"
+        self._summary_label.setText(summary)
         self._prev_btn.setEnabled(self._current_page > 1)
         self._next_btn.setEnabled(self._current_page < total_pages)
 
     def _sorted_records(self) -> list[dict[str, object]]:
-        entries = list(self._all_records)
+        entries = self._quick_filtered_records()
         if not entries or self._sort_column_combo.count() == 0:
             return entries
 
