@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
+from geodata_catalog.services.style_service import generate_style_preview_icon
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
@@ -55,6 +58,10 @@ def _display_category_label(raw_value: str) -> str:
     if value.casefold() == "file sources":
         return "Uncategorized"
     return value
+
+
+def _style_display_name(style_file: str) -> str:
+    return Path(style_file).stem or style_file
 
 
 class CatalogDockWidget(QDockWidget):
@@ -209,11 +216,15 @@ class CatalogDockWidget(QDockWidget):
             for layer in sorted(grouped_layers[category], key=lambda l: l.display_name.casefold()):
                 item = QListWidgetItem(f"  {layer.display_name}")
                 item.setData(USER_ROLE, (datasource_id, layer.layer_name))
+                style_icon = generate_style_preview_icon(layer.default_style_file)
+                if style_icon is not None:
+                    item.setIcon(style_icon)
                 item.setToolTip(
                     f"Category: {category}\n"
                     f"{layer.display_name}\nGeometry: {layer.geometry_type or 'Unknown'}\n"
                     f"CRS: {layer.default_crs or 'Not set'}\n"
                     f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
+                    + (f"\nStyle: {_style_display_name(layer.default_style_file)}" if layer.default_style_file else "")
                 )
                 self.layers_list.addItem(item)
 
@@ -281,6 +292,9 @@ class CatalogDockWidget(QDockWidget):
                 display_name = layer.display_name if loadable else f"{layer.display_name} (unavailable)"
                 item = QListWidgetItem(f"  [{source_name}] {display_name}")
                 item.setData(USER_ROLE, (datasource_id, layer.layer_name, loadable))
+                style_icon = generate_style_preview_icon(layer.default_style_file)
+                if style_icon is not None:
+                    item.setIcon(style_icon)
                 item.setToolTip(
                     f"Category: {category}\n"
                     f"Source: {source_name} ({source_type})\n"
@@ -289,6 +303,7 @@ class CatalogDockWidget(QDockWidget):
                     f"CRS: {layer.default_crs or 'Not set'}\n"
                     f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}\n"
                     f"Loadable: {'Yes' if loadable else 'No'}"
+                    + (f"\nStyle: {_style_display_name(layer.default_style_file)}" if layer.default_style_file else "")
                 )
                 if not loadable and availability_reason:
                     item.setToolTip(f"{item.toolTip()}\nReason: {availability_reason}")

@@ -16,6 +16,7 @@ class LayerConfig:
     category_label: str | None = None
     label_column: str | None = None
     svg_marker_path: str | None = None
+    qml_style_path: str | None = None
     enable_fl_filter: bool = True
     field_columns: list[dict[str, str | bool]] = field(default_factory=list)
     key_column: str | None = None
@@ -31,6 +32,7 @@ class LayerConfig:
             "category_label": self.category_label,
             "label_column": self.label_column,
             "svg_marker_path": self.svg_marker_path,
+            "qml_style_path": self.qml_style_path,
             "enable_fl_filter": self.enable_fl_filter,
             "field_columns": self.field_columns,
             "key_column": self.key_column,
@@ -46,6 +48,7 @@ class LayerConfig:
             category_label=data.get("category_label"),
             label_column=data.get("label_column"),
             svg_marker_path=data.get("svg_marker_path"),
+            qml_style_path=data.get("qml_style_path"),
             enable_fl_filter=bool(data.get("enable_fl_filter", True)),
             field_columns=field_columns,
             key_column=data.get("key_column"),

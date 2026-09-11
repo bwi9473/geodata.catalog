@@ -4,11 +4,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from geodata_catalog.metadata.layer_config_repository import LayerConfig
+from geodata_catalog.services.style_service import generate_style_preview_icon, list_style_files
 
 try:
+    from qgis.PyQt.QtCore import QSize
     from qgis.PyQt.QtGui import QIcon
 except ImportError:  # pragma: no cover
+    QSize = None
     QIcon = None
+
+_SMALL_ICON_SIZE = QSize(16, 16) if QSize is not None else None
 
 try:
     from qgis.PyQt.QtWidgets import (
@@ -16,6 +21,7 @@ try:
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QFileDialog,
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
@@ -33,6 +39,7 @@ except ImportError:  # pragma: no cover
     QComboBox = None
     QDialog = object
     QDialogButtonBox = None
+    QFileDialog = None
     QFormLayout = None
     QGroupBox = None
     QHBoxLayout = None
@@ -97,6 +104,7 @@ class LayerConfigDialog(QDialog):
         existing_config: LayerConfig | None = None,
         available_fields: list[dict[str, str]] | None = None,
         refresh_fields: Callable[[], list[dict[str, str]]] | None = None,
+        style_folder: str | Path | None = None,
     ) -> None:
         if QDialog is object:  # pragma: no cover
             raise RuntimeError("QGIS runtime is not available.")
@@ -106,6 +114,8 @@ class LayerConfigDialog(QDialog):
         self._refresh_fields = refresh_fields
         self._field_positions: dict[int, int] = {}
         self._svg_marker_path = ""
+        self._style_folder = style_folder
+        self._qml_style_path = ""
         self.setWindowTitle("Layer Configuration")
         self.setModal(True)
         self.resize(800, 540)
@@ -165,6 +175,19 @@ class LayerConfigDialog(QDialog):
         svg_row.addWidget(self._svg_marker_combo, 1)
         svg_row.addWidget(svg_browser_button)
         label_form.addRow("Point marker", svg_row)
+
+        self._qml_style_combo = QComboBox()
+        self._qml_style_combo.setIconSize(_SMALL_ICON_SIZE)
+        self._populate_qml_style_combo()
+        self._qml_style_combo.currentIndexChanged.connect(self._on_qml_style_changed)
+        qml_browse_button = QToolButton()
+        qml_browse_button.setText("...")
+        qml_browse_button.setToolTip("Choose a QML style file from disk")
+        qml_browse_button.clicked.connect(self._browse_qml_style)
+        qml_row = QHBoxLayout()
+        qml_row.addWidget(self._qml_style_combo, 1)
+        qml_row.addWidget(qml_browse_button)
+        label_form.addRow("Style (QML)", qml_row)
         layout.addWidget(label_group)
 
         fields_group = QGroupBox("Layer Attributes")
@@ -249,6 +272,7 @@ class LayerConfigDialog(QDialog):
             category_label=category_label,
             label_column=label_col,
             svg_marker_path=self._svg_marker_path or None,
+            qml_style_path=self._qml_style_path or None,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
             field_columns=field_columns,
             key_column=key_column,
@@ -263,6 +287,7 @@ class LayerConfigDialog(QDialog):
         self._category_label_edit.setText(config.category_label or "")
         self._label_edit.setText(config.label_column or "")
         self._set_svg_marker_path(config.svg_marker_path or "")
+        self._set_qml_style_path(config.qml_style_path or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
         field_columns = self._merge_field_columns(config.field_columns, available_fields)
         self._populate_field_columns(field_columns)
@@ -390,6 +415,47 @@ class LayerConfigDialog(QDialog):
             self._add_svg_marker_item("Custom SVG", svg_path)
             self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
         self._svg_marker_path = svg_path
+
+    def _populate_qml_style_combo(self) -> None:
+        self._qml_style_combo.blockSignals(True)
+        self._qml_style_combo.clear()
+        self._qml_style_combo.addItem("No style (default)", "")
+        for name, path in list_style_files(self._style_folder):
+            self._add_qml_style_item(name, path)
+        self._qml_style_combo.blockSignals(False)
+        self._qml_style_path = ""
+
+    def _add_qml_style_item(self, name: str, style_path: str) -> None:
+        icon = generate_style_preview_icon(style_path)
+        if icon is None:
+            self._qml_style_combo.addItem(name, style_path)
+            return
+        self._qml_style_combo.addItem(icon, name, style_path)
+
+    def _on_qml_style_changed(self, _index: int) -> None:
+        self._qml_style_path = str(self._qml_style_combo.currentData() or "")
+
+    def _set_qml_style_path(self, style_path: str) -> None:
+        for index in range(self._qml_style_combo.count()):
+            if self._qml_style_combo.itemData(index) == style_path:
+                self._qml_style_combo.setCurrentIndex(index)
+                self._qml_style_path = style_path
+                return
+        if style_path:
+            self._add_qml_style_item(Path(style_path).stem, style_path)
+            self._qml_style_combo.setCurrentIndex(self._qml_style_combo.count() - 1)
+        self._qml_style_path = style_path
+
+    def _browse_qml_style(self) -> None:
+        if QFileDialog is None:  # pragma: no cover
+            QMessageBox.warning(self, "Style (QML)", "The file browser is not available.")
+            return
+        start_dir = str(self._style_folder) if self._style_folder else ""
+        style_path, _filter = QFileDialog.getOpenFileName(
+            self, "Choose Style (QML)", start_dir, "QGIS Style Files (*.qml)"
+        )
+        if style_path:
+            self._set_qml_style_path(style_path)
 
     def _open_svg_browser(self) -> None:
         if QgsSvgSelectorWidget is None:

@@ -1036,6 +1036,7 @@ class GeoDataCatalogPlugin:
             existing_config=existing_config,
             available_fields=self._discover_layer_fields(datasource_id, layer_name),
             refresh_fields=lambda: self._discover_layer_fields(datasource_id, layer_name),
+            style_folder=self._resolve_style_folder(),
         )
         if self._run_dialog(dialog) != self._accepted_code(dialog):
             return
@@ -1048,8 +1049,26 @@ class GeoDataCatalogPlugin:
             f"Layer config saved for '{layer_def.display_name}': "
             f"label_column={config.label_column}, "
             f"enable_fl_filter={config.enable_fl_filter}, "
+            f"qml_style_path={config.qml_style_path}, "
             f"searchable_columns={config.searchable_columns}"
         )
+
+    def _resolve_style_folder(self) -> str | None:
+        """Return the folder used to discover selectable QML style files.
+
+        Stored as a sibling of the main config file (next to
+        ``layer_config.json``), created on first use. Scanning this folder is
+        cheap and done on demand when the config dialog opens; there is no
+        need to pre-scan it at QGIS startup.
+        """
+        folder = self._settings_manager.sibling_file_path("styles")
+        if folder is None:
+            return None
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        return str(folder)
 
     @staticmethod
     def _layer_config_source_label(datasource: Datasource, layer_def: LayerDefinition) -> str:

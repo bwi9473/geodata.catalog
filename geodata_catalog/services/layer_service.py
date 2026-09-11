@@ -62,6 +62,8 @@ class LayerService:
                 if layer_config.label_column is not None:
                     layer.label_column = layer_config.label_column
                 layer.metadata["svg_marker_path"] = layer_config.svg_marker_path
+                if layer_config.qml_style_path:
+                    layer.default_style_file = layer_config.qml_style_path
                 layer.metadata["enable_fl_filter"] = bool(layer_config.enable_fl_filter)
                 layer.searchable_columns = layer_config.searchable_columns
                 layer.metadata["view_columns"] = layer_config.view_columns
