@@ -18,6 +18,7 @@ class SavedLayerView:
     grouping: dict[str, str]
     updated_at: str
     id: str = ""
+    style_state: str = ""
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -34,6 +35,7 @@ class SavedLayerView:
             "name": self.name,
             "filter_state": self.filter_state,
             "grouping": self.grouping,
+            "style_state": self.style_state,
             "updated_at": self.updated_at,
         }
 
@@ -48,4 +50,5 @@ class SavedLayerView:
             filter_state=dict(value.get("filter_state", {})),
             grouping=dict(value.get("grouping", {})),
             updated_at=str(value.get("updated_at", "")),
+            style_state=str(value.get("style_state", "")),
         )

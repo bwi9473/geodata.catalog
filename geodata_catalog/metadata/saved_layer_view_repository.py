@@ -40,3 +40,37 @@ class SavedLayerViewRepository:
             items = [item for item in items if item.id != existing.id]
         items.append(view)
         self._settings_manager.set_json(self.SETTINGS_KEY, [item.to_dict() for item in items])
+
+    def rename(self, view_id: str, name: str) -> bool:
+        new_name = name.strip()
+        if not new_name:
+            raise ValueError("The layer view name cannot be empty.")
+        items = self.list_all()
+        view = next((item for item in items if item.id == view_id), None)
+        if view is None:
+            return False
+        duplicate = next(
+            (
+                item
+                for item in items
+                if item.id != view_id
+                and item.datasource_id == view.datasource_id
+                and item.layer_name == view.layer_name
+                and item.name.casefold() == new_name.casefold()
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise ValueError(f"A layer view named '{new_name}' already exists for this layer.")
+        view.name = new_name
+        view.updated_at = datetime.now(timezone.utc).isoformat()
+        self._settings_manager.set_json(self.SETTINGS_KEY, [item.to_dict() for item in items])
+        return True
+
+    def delete(self, view_id: str) -> bool:
+        items = self.list_all()
+        remaining = [item for item in items if item.id != view_id]
+        if len(remaining) == len(items):
+            return False
+        self._settings_manager.set_json(self.SETTINGS_KEY, [item.to_dict() for item in remaining])
+        return True

@@ -11,6 +11,7 @@ from qgis.PyQt.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QLineEdit,
     QToolButton,
     QVBoxLayout,
@@ -39,6 +40,8 @@ class LoadableLayersDockWidget(QDockWidget):
     basemap_selected = pyqtSignal(str)
     saved_view_requested = pyqtSignal(str)
     saved_view_details_requested = pyqtSignal(str)
+    saved_view_rename_requested = pyqtSignal(str)
+    saved_view_delete_requested = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__("Data Panel", parent)
@@ -76,6 +79,11 @@ class LoadableLayersDockWidget(QDockWidget):
         self.layers_tree.setUniformRowHeights(True)
         self.layers_tree.setIndentation(19)
         self.layers_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        context_policy = getattr(Qt, "CustomContextMenu", None)
+        if context_policy is None:
+            context_policy = Qt.ContextMenuPolicy.CustomContextMenu
+        self.layers_tree.setContextMenuPolicy(context_policy)
+        self.layers_tree.customContextMenuRequested.connect(self._on_context_menu_requested)
         root.addWidget(self.layers_tree, stretch=1)
 
         footer = QFrame()
@@ -259,6 +267,21 @@ class LoadableLayersDockWidget(QDockWidget):
             self.saved_view_requested.emit(str(payload[1]))
         elif payload and len(payload) == 4 and bool(payload[3]):
             self.load_layer_requested.emit(str(payload[0]), str(payload[1]))
+
+    def _on_context_menu_requested(self, position) -> None:
+        item = self.layers_tree.itemAt(position)
+        payload = item.data(0, USER_ROLE) if item is not None else None
+        if not payload or len(payload) != 2 or payload[0] != "saved_view":
+            return
+        menu = QMenu(self.layers_tree)
+        rename_action = menu.addAction("Rename Layer View")
+        delete_action = menu.addAction("Delete Layer View")
+        selected_action = menu.exec(self.layers_tree.viewport().mapToGlobal(position))
+        view_id = str(payload[1])
+        if selected_action == rename_action:
+            self.saved_view_rename_requested.emit(view_id)
+        elif selected_action == delete_action:
+            self.saved_view_delete_requested.emit(view_id)
 
     @staticmethod
     def _saved_view_filter_text(view: SavedLayerView) -> str:

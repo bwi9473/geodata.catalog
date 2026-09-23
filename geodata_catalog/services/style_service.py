@@ -38,6 +38,20 @@ _PREVIEW_GEOMETRIES = ("Point", "LineString", "Polygon", "NoGeometry")
 _PREVIEW_ICON_CACHE: dict[str, tuple[float, "QIcon"]] = {}
 
 
+def _load_named_style(layer, style_path: str) -> tuple[bool, object]:
+    """Normalize QGIS 3/4 loadNamedStyle return values to ``(success, error)``."""
+    result = layer.loadNamedStyle(style_path)
+    if isinstance(result, tuple) and len(result) == 2:
+        first, second = result
+        if isinstance(second, bool):
+            return second, first
+        if isinstance(first, bool):
+            return first, second
+    if isinstance(result, bool):
+        return result, ""
+    return bool(result), result
+
+
 def list_style_files(folder: str | Path | None) -> list[tuple[str, str]]:
     """Return ``(display_name, path)`` pairs for ``.qml`` files in ``folder``.
 
@@ -89,7 +103,7 @@ def _render_style_preview_icon(style_path: str, size: int):
         probe_layer = QgsVectorLayer(f"{geom_type}?crs=EPSG:4326", "style_preview", "memory")
         if not probe_layer.isValid():
             continue
-        ok, _error = probe_layer.loadNamedStyle(style_path)
+        ok, _error = _load_named_style(probe_layer, style_path)
         if not ok:
             continue
         renderer = probe_layer.renderer()
@@ -121,7 +135,7 @@ class StyleService:
         if not style_path.exists():
             self._logger.warning(f"Style file not found: {style_file}")
             return
-        ok, error = layer.loadNamedStyle(str(style_path))
+        ok, error = _load_named_style(layer, str(style_path))
         if not ok:
             self._logger.warning(f"Failed applying style '{style_file}': {error}")
             return

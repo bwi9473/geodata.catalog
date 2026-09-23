@@ -31,6 +31,13 @@ def _dialog_button(name: str):
     return getattr(QDialogButtonBox.StandardButton, name)
 
 
+def _messagebox_button(name: str):
+    button = getattr(QMessageBox, name, None)
+    if button is not None:
+        return button
+    return getattr(QMessageBox.StandardButton, name)
+
+
 class SaveLayerViewDialog(QDialog):
     """Collect a target layer and name for a user-local saved view."""
 
@@ -74,6 +81,7 @@ class SaveLayerViewDialog(QDialog):
         form.addRow("Layer", self._layer_combo)
 
         self._name_edit = QLineEdit(self)
+        self._name_edit.setText(self.selected_layer()[2])
         self._name_edit.setPlaceholderText("Name of this view")
         self._name_edit.returnPressed.connect(self.accept)
         form.addRow("View name", self._name_edit)
@@ -107,9 +115,9 @@ class SaveLayerViewDialog(QDialog):
                 self,
                 "Overwrite Layer View",
                 f"A view named '{name}' already exists for this layer. Overwrite it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                _messagebox_button("Yes") | _messagebox_button("No"),
+                _messagebox_button("No"),
             )
-            if response != QMessageBox.Yes:
+            if response != _messagebox_button("Yes"):
                 return
         super().accept()

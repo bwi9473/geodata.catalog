@@ -38,22 +38,27 @@ from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
 
 from qgis.PyQt.QtCore import Qt, QVariant
-from qgis.PyQt.QtWidgets import QAction, QApplication, QFileDialog, QMenu, QMessageBox
+from qgis.PyQt.QtXml import QDomDocument
+from qgis.PyQt.QtWidgets import QAction, QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox
 
 try:
     from qgis.core import (
         QgsFeature,
         QgsField,
+        QgsMapLayerStyle,
         QgsMapLayerType,
         QgsProject,
+        QgsReadWriteContext,
         QgsVectorFileWriter,
         QgsVectorLayer,
     )
 except ImportError:  # pragma: no cover
     QgsFeature = None
     QgsField = None
+    QgsMapLayerStyle = None
     QgsMapLayerType = None
     QgsProject = None
+    QgsReadWriteContext = None
     QgsVectorFileWriter = None
     QgsVectorLayer = None
 
@@ -173,6 +178,8 @@ class GeoDataCatalogPlugin:
             self._loadable_layers_dock.load_layer_requested.connect(self._on_load_layer)
             self._loadable_layers_dock.saved_view_requested.connect(self._apply_saved_layer_view)
             self._loadable_layers_dock.saved_view_details_requested.connect(self._show_saved_layer_view_details)
+            self._loadable_layers_dock.saved_view_rename_requested.connect(self._rename_saved_layer_view)
+            self._loadable_layers_dock.saved_view_delete_requested.connect(self._delete_saved_layer_view)
             self._loadable_layers_dock.basemap_selected.connect(self._on_basemap_selected)
             self._configure_as_floating_window(self._loadable_layers_dock)
         self._apply_configured_theme(self._loadable_layers_dock)
@@ -778,6 +785,17 @@ class GeoDataCatalogPlugin:
         active = self._active_layer()
         active_definition = self._find_layer_definition_for_qgis_layer(active) if active is not None else None
         selected_key = active_definition.key() if active_definition is not None else ""
+        if active_definition is not None and active is not None:
+            active_layer_name = str(active.name() or "").strip()
+            if active_layer_name:
+                choices = [
+                    (
+                        datasource_id,
+                        layer_name,
+                        active_layer_name if f"{datasource_id}:{layer_name}" == selected_key else display_name,
+                    )
+                    for datasource_id, layer_name, display_name in choices
+                ]
         existing_names: dict[str, list[str]] = {}
         for view in self._saved_layer_view_repository.list_all():
             existing_names.setdefault(f"{view.datasource_id}:{view.layer_name}", []).append(view.name)
@@ -861,7 +879,11 @@ class GeoDataCatalogPlugin:
         ]
         dialog = SaveLayerViewDialog(
             self.iface.mainWindow(),
-            [(definition.datasource_id, definition.layer_name, definition.display_name)],
+            [(
+                definition.datasource_id,
+                definition.layer_name,
+                str(layer.name() or definition.display_name).strip() or definition.display_name,
+            )],
             definition.key(),
             existing_names,
         )
@@ -878,6 +900,7 @@ class GeoDataCatalogPlugin:
                 filter_state=self._serialize_layer_filter(layer, definition),
                 grouping=self._layer_groupings.get(self._qgis_layer_id(layer), {"kind": "none"}),
                 updated_at="",
+                style_state=self._serialize_layer_style(layer),
             )
         )
         self._refresh_all_layers_view()
@@ -893,13 +916,24 @@ class GeoDataCatalogPlugin:
         except GeoDataCatalogException as exc:
             self._show_error("Saved Layer View", str(exc))
             return
-        layer = self._find_qgis_layer(definition)
+        layer = self._find_saved_view_layer(view.id)
         if layer is None:
-            self._on_load_layer(view.datasource_id, view.layer_name)
-            layer = self._find_qgis_layer(definition)
+            try:
+                datasource = self._datasource_service.get_datasource(view.datasource_id)
+                connector = self._datasource_service.get_connector(datasource)
+                layer = self._loader_service.load_layer(
+                    definition,
+                    connector,
+                    apply_configured_style=False,
+                )
+            except GeoDataCatalogException as exc:
+                self._show_error("Saved Layer View", str(exc))
+                return
         if layer is None:
             self._show_error("Saved Layer View", "The layer could not be loaded.")
             return
+        if hasattr(layer, "setName"):
+            layer.setName(view.name)
         self._apply_layer_filter(layer, self._deserialize_layer_filter(view.filter_state))
         grouping = view.grouping
         kind = grouping.get("kind", "none")
@@ -909,7 +943,45 @@ class GeoDataCatalogPlugin:
             self._apply_flight_level_range_grouping(layer)
         elif kind == "flight_level_presets":
             self._apply_flight_level_preset_grouping(layer)
+        self._apply_layer_style(layer, view.style_state)
+        if hasattr(layer, "setCustomProperty"):
+            layer.setCustomProperty("geodata_catalog/saved_view_id", view.id)
         self._logger.info(f"Applied saved layer view '{view.name}' for '{definition.display_name}'.")
+
+    def _rename_saved_layer_view(self, view_id: str) -> None:
+        view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
+        if view is None:
+            return
+        new_name, accepted = QInputDialog.getText(
+            self.iface.mainWindow(),
+            "Rename Layer View",
+            "New name:",
+            text=view.name,
+        )
+        if not accepted:
+            return
+        try:
+            self._saved_layer_view_repository.rename(view_id, new_name)
+        except ValueError as exc:
+            self._show_error("Rename Layer View", str(exc))
+            return
+        self._refresh_all_layers_view()
+
+    def _delete_saved_layer_view(self, view_id: str) -> None:
+        view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
+        if view is None:
+            return
+        response = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Delete Layer View",
+            f"Delete the saved layer view '{view.name}'?",
+            self._messagebox_yes_button() | self._messagebox_no_button(),
+            self._messagebox_no_button(),
+        )
+        if response != self._messagebox_yes_button():
+            return
+        self._saved_layer_view_repository.delete(view_id)
+        self._refresh_all_layers_view()
 
     def _show_saved_layer_view_details(self, view_id: str) -> None:
         view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
@@ -949,8 +1021,39 @@ class GeoDataCatalogPlugin:
         if QgsProject is None:
             return None
         try:
+            for layer in QgsProject.instance().mapLayers().values():
+                datasource_id = str(
+                    layer.customProperty("geodata_catalog/datasource_id") or ""
+                ).strip()
+                source_layer_name = str(
+                    layer.customProperty("geodata_catalog/source_layer_name") or ""
+                ).strip()
+                if (
+                    datasource_id == definition.datasource_id
+                    and source_layer_name == definition.layer_name
+                ):
+                    return layer
             return next(
                 (layer for layer in QgsProject.instance().mapLayers().values() if layer.name() == definition.display_name),
+                None,
+            )
+        except Exception:
+            return None
+
+    def _find_saved_view_layer(self, view_id: str):
+        if QgsProject is None:
+            return None
+        wanted_id = str(view_id or "").strip()
+        if not wanted_id:
+            return None
+        try:
+            return next(
+                (
+                    layer
+                    for layer in QgsProject.instance().mapLayers().values()
+                    if str(layer.customProperty("geodata_catalog/saved_view_id") or "").strip()
+                    == wanted_id
+                ),
                 None,
             )
         except Exception:
@@ -1001,6 +1104,35 @@ class GeoDataCatalogPlugin:
                 for attribute in attributes
             ],
         }
+
+    @staticmethod
+    def _serialize_layer_style(layer) -> str:
+        if layer is None or QgsMapLayerStyle is None:
+            return ""
+        try:
+            style = QgsMapLayerStyle()
+            style.readFromLayer(layer)
+            return str(style.xmlData() or "")
+        except Exception:
+            return ""
+
+    def _apply_layer_style(self, layer, style_state: str) -> None:
+        if not style_state or layer is None or QgsMapLayerStyle is None:
+            return
+        try:
+            document = QDomDocument("qgis")
+            if not document.setContent(style_state):
+                self._logger.warning("Saved layer style contains invalid XML.")
+                return
+            context = QgsReadWriteContext() if QgsReadWriteContext is not None else None
+            if hasattr(layer, "readStyle"):
+                self._logger.info(f"Restoring saved style for '{layer.name()}'.")
+                layer.readStyle(document.documentElement(), None, context)
+                self._logger.info(f"Saved style restored for '{layer.name()}'.")
+            if hasattr(layer, "triggerRepaint"):
+                layer.triggerRepaint()
+        except Exception as exc:
+            self._logger.warning(f"Could not restore saved layer style: {exc}")
 
     @staticmethod
     def _deserialize_layer_filter(state: dict[str, object]) -> LayerFilter:
@@ -1464,7 +1596,27 @@ class GeoDataCatalogPlugin:
         return self.iface.activeLayer()
 
     def _find_layer_definition_for_qgis_layer(self, qgis_layer) -> LayerDefinition | None:
-        """Find the cached LayerDefinition that matches a QGIS layer by display name."""
+        """Find the catalog definition by stable source properties or display name."""
+        try:
+            datasource_id = str(
+                qgis_layer.customProperty("geodata_catalog/datasource_id") or ""
+            ).strip()
+            source_layer_name = str(
+                qgis_layer.customProperty("geodata_catalog/source_layer_name") or ""
+            ).strip()
+        except Exception:
+            datasource_id = ""
+            source_layer_name = ""
+
+        if datasource_id and source_layer_name:
+            layer_def = self._layer_cache.get(datasource_id, {}).get(source_layer_name)
+            if layer_def is not None:
+                return layer_def
+            try:
+                return self._resolve_layer(datasource_id, source_layer_name)
+            except GeoDataCatalogException:
+                pass
+
         display_name = qgis_layer.name()
         for layers_by_name in self._layer_cache.values():
             for layer_def in layers_by_name.values():
