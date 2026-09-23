@@ -4,7 +4,7 @@ from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.models.saved_layer_view import SavedLayerView
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
-from qgis.PyQt.QtGui import QColor, QIcon
+from qgis.PyQt.QtGui import QColor, QIcon, QBrush
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDockWidget,
@@ -16,14 +16,17 @@ from qgis.PyQt.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QAbstractItemView,
+    QHeaderView,
     QTreeWidget,
     QTreeWidgetItem,
 )
 
 
-USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
-
-
+_ITEM_DATA_ROLE = getattr(Qt, "ItemDataRole", None)
+USER_ROLE = getattr(Qt, "UserRole", None)
+if USER_ROLE is None and _ITEM_DATA_ROLE is not None:
+    USER_ROLE = _ITEM_DATA_ROLE.UserRole
 def _display_category_label(raw_value: str) -> str:
     value = (raw_value or "").strip()
     if not value:
@@ -35,6 +38,8 @@ def _display_category_label(raw_value: str) -> str:
 
 class LoadableLayersDockWidget(QDockWidget):
     """Dock for selecting visible catalog layers and the active basemap."""
+
+    _GEOMETRY_ICON_CACHE: dict[str, QIcon] = {}
 
     load_layer_requested = pyqtSignal(str, str)
     basemap_selected = pyqtSignal(str)
@@ -48,7 +53,11 @@ class LoadableLayersDockWidget(QDockWidget):
         self._rows: list[dict[str, str | LayerDefinition]] = []
         self._updating_tree = False
         self._updating_basemap = False
+        self._highlighted_item = None
+        self._highlighted_identity = None
         self._theme_primary = "#59A947"
+        self._theme_primary_text = "#FFFFFF"
+        self._theme_text = "#1E293B"
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -72,12 +81,19 @@ class LoadableLayersDockWidget(QDockWidget):
         root.addLayout(search_row)
 
         self.layers_tree = QTreeWidget()
-        self.layers_tree.setColumnCount(1)
+        self.layers_tree.setColumnCount(2)
         self.layers_tree.setHeaderHidden(True)
         self.layers_tree.setRootIsDecorated(True)
         self.layers_tree.setAlternatingRowColors(False)
         self.layers_tree.setUniformRowHeights(True)
         self.layers_tree.setIndentation(19)
+        self.layers_tree.setSelectionMode(self._selection_mode("NoSelection"))
+        header = self.layers_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, self._header_resize_mode("Stretch"))
+        header.setSectionResizeMode(1, self._header_resize_mode("Fixed"))
+        self.layers_tree.setColumnWidth(1, 24)
+        self.layers_tree.itemClicked.connect(self._on_item_clicked)
         self.layers_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         context_policy = getattr(Qt, "CustomContextMenu", None)
         if context_policy is None:
@@ -119,6 +135,8 @@ class LoadableLayersDockWidget(QDockWidget):
         header_background = str(ui_colors.get("header_background", "#EEF3FA"))
         header_text = str(ui_colors.get("header_text", "#0F172A"))
         self._theme_primary = primary
+        self._theme_primary_text = primary_text
+        self._theme_text = text
         self.setStyleSheet(
             "\n".join(
                 [
@@ -130,7 +148,11 @@ class LoadableLayersDockWidget(QDockWidget):
                     f"QToolButton:hover {{ border-color: {primary}; background: {header_background}; color: {header_text}; }}",
                     f"QTreeWidget {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
                     f"QTreeWidget::item {{ min-height: 32px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
-                    f"QTreeWidget::item:selected {{ background: {primary}; color: {primary_text}; }}",
+                    "QTreeWidget::item:column(1) { padding-right: 6px; padding-left: 0px; }",
+                    f"QTreeWidget::item:selected {{ background: transparent; color: {text}; }}",
+                    f"QTreeWidget::item:selected:active {{ background: transparent; color: {text}; }}",
+                    f"QTreeWidget::item:selected:!active {{ background: transparent; color: {text}; }}",
+                    f"QTreeWidget::branch:selected {{ background: transparent; }}",
                     f"QTreeWidget::branch:has-children:closed, QTreeWidget::branch:has-children:open {{ color: {primary}; }}",
                     f"QFrame[basemapFooter='true'] {{ background: {panel_background}; border: 1px solid {border}; border-radius: 4px; }}",
                     f"QLabel[sectionLabel='true'] {{ color: {primary}; font-size: 10px; font-weight: 700; }}",
@@ -147,6 +169,7 @@ class LoadableLayersDockWidget(QDockWidget):
     ) -> None:
         self._rows = list(rows)
         self._updating_tree = True
+        self._highlighted_item = None
         self.layers_tree.clear()
         grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
         views_by_layer: dict[str, list[SavedLayerView]] = {}
@@ -192,7 +215,14 @@ class LoadableLayersDockWidget(QDockWidget):
                 layer_key = layer.key()
                 item = QTreeWidgetItem(category_item, [layer.display_name])
                 item.setIcon(0, self._datasource_icon(source_type))
-                item.setData(0, USER_ROLE, (datasource_id, layer.layer_name, layer_key, loadable))
+                geometry_icon = self._layer_icon(layer)
+                if geometry_icon is not None:
+                    item.setIcon(1, geometry_icon)
+                item.setTextAlignment(1, self._right_alignment())
+                item_payload = (datasource_id, layer.layer_name, layer_key, loadable)
+                item.setData(0, USER_ROLE, item_payload)
+                if self._highlighted_identity == item_payload[:3]:
+                    self._set_item_highlight(item)
                 item.setToolTip(
                     0,
                     f"Category: {category}\n"
@@ -209,9 +239,11 @@ class LoadableLayersDockWidget(QDockWidget):
                     item.setDisabled(True)
 
                 for view in sorted(views_by_layer.get(layer_key, []), key=lambda value: value.name.casefold()):
-                    view_item = QTreeWidgetItem(item, [""])
-                    view_item.setIcon(0, QIcon(":/images/themes/default/mActionFileSave.svg"))
-                    view_item.setData(0, USER_ROLE, ("saved_view", view.id))
+                    view_item = QTreeWidgetItem(item, [view.name])
+                    view_payload = ("saved_view", view.id)
+                    view_item.setData(0, USER_ROLE, view_payload)
+                    if self._highlighted_identity == view_payload:
+                        self._set_item_highlight(view_item)
                     filter_text = self._saved_view_filter_text(view)
                     grouping_text = self._saved_view_grouping_text(view)
                     tooltip = (
@@ -222,16 +254,6 @@ class LoadableLayersDockWidget(QDockWidget):
                         "Double-click to apply this saved view."
                     )
                     view_item.setToolTip(0, tooltip)
-                    view_row = QWidget(self.layers_tree)
-                    view_row.setToolTip(tooltip)
-                    view_layout = QHBoxLayout(view_row)
-                    view_layout.setContentsMargins(0, 0, 0, 0)
-                    view_layout.setSpacing(4)
-                    view_label = QLabel(view.name, view_row)
-                    view_label.setToolTip(tooltip)
-                    view_layout.addWidget(view_label)
-                    view_layout.addStretch(1)
-                    self.layers_tree.setItemWidget(view_item, 0, view_row)
 
             category_item.setExpanded(True)
 
@@ -261,12 +283,64 @@ class LoadableLayersDockWidget(QDockWidget):
             return value
         return getattr(Qt.CheckState, "Checked" if checked else "Unchecked")
 
+    @staticmethod
+    def _right_alignment():
+        alignment_flag = getattr(Qt, "AlignmentFlag", None)
+        if alignment_flag is not None:
+            return alignment_flag.AlignRight | alignment_flag.AlignVCenter
+        return Qt.AlignRight | Qt.AlignVCenter
+
+    @staticmethod
+    def _header_resize_mode(name: str):
+        resize_mode = getattr(QHeaderView, "ResizeMode", None)
+        if resize_mode is not None:
+            return getattr(resize_mode, name)
+        return getattr(QHeaderView, name)
+
+    @staticmethod
+    def _selection_behavior(name: str):
+        selection_behavior = getattr(QAbstractItemView, name, None)
+        if selection_behavior is not None:
+            return selection_behavior
+        return getattr(QAbstractItemView.SelectionBehavior, name)
+
+    @staticmethod
+    def _selection_mode(name: str):
+        selection_mode = getattr(QAbstractItemView, name, None)
+        if selection_mode is not None:
+            return selection_mode
+        return getattr(QAbstractItemView.SelectionMode, name)
+
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         payload = item.data(0, USER_ROLE)
         if payload and len(payload) == 2 and payload[0] == "saved_view":
             self.saved_view_requested.emit(str(payload[1]))
         elif payload and len(payload) == 4 and bool(payload[3]):
             self.load_layer_requested.emit(str(payload[0]), str(payload[1]))
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        payload = item.data(0, USER_ROLE)
+        if payload and len(payload) == 4:
+            self._highlighted_identity = payload[:3]
+        elif payload and len(payload) == 2 and payload[0] == "saved_view":
+            self._highlighted_identity = payload
+        else:
+            self._highlighted_identity = None
+        self._set_item_highlight(item)
+
+    def _set_item_highlight(self, item: QTreeWidgetItem) -> None:
+        clear_brush = QBrush(QColor("transparent"))
+        if self._highlighted_item is not None and self._highlighted_item is not item:
+            for column in range(self.layers_tree.columnCount()):
+                self._highlighted_item.setBackground(column, clear_brush)
+                self._highlighted_item.setForeground(column, QBrush(QColor(self._theme_text)))
+
+        highlight_brush = QBrush(QColor(self._theme_primary))
+        highlight_text_brush = QBrush(QColor(self._theme_text))
+        for column in range(self.layers_tree.columnCount()):
+            item.setBackground(column, highlight_brush)
+            item.setForeground(column, highlight_text_brush)
+        self._highlighted_item = item
 
     def _on_context_menu_requested(self, position) -> None:
         item = self.layers_tree.itemAt(position)
@@ -321,12 +395,39 @@ class LoadableLayersDockWidget(QDockWidget):
             self.layers_tree.topLevelItem(index).setExpanded(should_expand)
 
     @staticmethod
-    def _layer_icon(layer: LayerDefinition) -> QIcon:
-        if (layer.geometry_type or "").casefold() in {"point", "multipoint"}:
-            return QIcon(":/images/themes/default/mIconPointLayer.svg")
-        if (layer.geometry_type or "").casefold() in {"line", "linestring", "multilinestring"}:
-            return QIcon(":/images/themes/default/mIconLineLayer.svg")
-        return QIcon(":/images/themes/default/mIconPolygonLayer.svg")
+    def _geometry_icon_kind(geometry_type: str | None) -> str:
+        normalized_type = str(geometry_type or "").strip().casefold()
+        if normalized_type in {"point", "multipoint"} or normalized_type.startswith("point"):
+            return "point"
+        if normalized_type == "circle" or normalized_type.startswith("circle"):
+            return "circle"
+        if normalized_type in {"line", "linestring", "multilinestring"} or normalized_type.startswith(
+            ("line", "circularstring", "compoundcurve", "curve")
+        ):
+            return "line"
+        return "polygon"
+
+    @classmethod
+    def _geometry_icon(cls, geometry_kind: str) -> QIcon:
+        cached_icon = cls._GEOMETRY_ICON_CACHE.get(geometry_kind)
+        if cached_icon is not None:
+            return cached_icon
+        icon_names = {
+            "point": "mIconPointLayer.svg",
+            "line": "mIconLineLayer.svg",
+            "circle": "mIconCircle.svg",
+            "polygon": "mIconPolygonLayer.svg",
+        }
+        icon = QIcon(f":/images/themes/default/{icon_names.get(geometry_kind, icon_names['polygon'])}")
+        cls._GEOMETRY_ICON_CACHE[geometry_kind] = icon
+        return icon
+
+    @classmethod
+    def _layer_icon(cls, layer: LayerDefinition) -> QIcon | None:
+        """Return the geometry icon, retained for callers using the old helper."""
+        if not str(layer.geometry_type or "").strip():
+            return None
+        return cls._geometry_icon(cls._geometry_icon_kind(layer.geometry_type))
 
     @staticmethod
     def _datasource_icon(source_type: str) -> QIcon:

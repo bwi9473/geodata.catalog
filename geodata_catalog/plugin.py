@@ -51,6 +51,7 @@ try:
         QgsReadWriteContext,
         QgsVectorFileWriter,
         QgsVectorLayer,
+        QgsWkbTypes,
     )
 except ImportError:  # pragma: no cover
     QgsFeature = None
@@ -61,6 +62,7 @@ except ImportError:  # pragma: no cover
     QgsReadWriteContext = None
     QgsVectorFileWriter = None
     QgsVectorLayer = None
+    QgsWkbTypes = None
 
 try:
     from qgis.gui import QgsLayerTreeViewContextMenuProvider
@@ -214,13 +216,13 @@ class GeoDataCatalogPlugin:
         target_width = target_geometry.width() if target_geometry is not None else available_geometry.width()
         target_height = target_geometry.height() if target_geometry is not None else available_geometry.height()
 
-        width = max(460, min(640, int(target_width * 0.34)))
+        width = max(440, min(520, int(target_width * 0.28)))
         height = max(620, min(820, int(target_height * 0.82)))
         width = min(width, max(320, available_geometry.width() - 48))
         height = min(height, max(420, available_geometry.height() - 48))
 
         if hasattr(widget, "setMinimumSize"):
-            widget.setMinimumSize(380, 520)
+            widget.setMinimumSize(440, 520)
         widget.resize(width, height)
 
     def _size_configuration_window(self, widget) -> None:
@@ -769,13 +771,34 @@ class GeoDataCatalogPlugin:
             datasource = self._datasource_service.get_datasource(datasource_id)
             connector = self._datasource_service.get_connector(datasource)
             layer_definition = self._resolve_layer(datasource_id, layer_name)
-            self._loader_service.load_layer(layer_definition, connector)
+            loaded_layer = self._loader_service.load_layer(layer_definition, connector)
+            detected_geometry_type = self._geometry_type_from_qgis_layer(loaded_layer)
+            if detected_geometry_type:
+                layer_definition.geometry_type = detected_geometry_type
+                layer_definition.metadata["geometry_type"] = detected_geometry_type
+                self._layer_service.save_layer_configuration(layer_definition)
             self._layer_toolbox_service.ensure_default_basemap_for_empty_project()
             self._loaded_layer_keys.add(layer_definition.key())
             if self._loadable_layers_dock is not None:
                 self._loadable_layers_dock.refresh_loaded_state(self._loaded_layer_keys)
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
+
+    @staticmethod
+    def _geometry_type_from_qgis_layer(layer) -> str | None:
+        if QgsWkbTypes is None or layer is None or not hasattr(layer, "geometryType"):
+            return None
+        try:
+            geometry_type = layer.geometryType()
+            if geometry_type == QgsWkbTypes.PointGeometry:
+                return "POINT"
+            if geometry_type == QgsWkbTypes.LineGeometry:
+                return "LINESTRING"
+            if geometry_type == QgsWkbTypes.PolygonGeometry:
+                return "POLYGON"
+        except Exception:
+            return None
+        return None
 
     def _on_save_layer_view_from_toolbar(self) -> None:
         choices = self._available_layer_choices()

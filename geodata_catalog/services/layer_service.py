@@ -52,6 +52,7 @@ class LayerService:
                 layer.default_style_file = (
                     configured_layer.default_style_file or layer.default_style_file
                 )
+                layer.geometry_type = layer.geometry_type or configured_layer.geometry_type
                 layer.metadata = {**layer.metadata, **configured_layer.metadata}
 
             # Merge per-layer display/search config (label_column, searchable_columns)
