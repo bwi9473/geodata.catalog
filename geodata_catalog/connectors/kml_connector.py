@@ -20,7 +20,7 @@ class KmlConnector(BaseConnector):
         self._datasource_id = datasource_id
         self._config = config
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         path = self._resolve_path()
         sublayers = self._discover_sublayers(path)
         if not sublayers:

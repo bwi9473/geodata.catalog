@@ -33,7 +33,7 @@ class RestConnector(BaseConnector):
         self._config = config
         self._temp_files: dict[str, Path] = {}
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         base_url = self._config.get("url")
         if not base_url:
             raise ConfigurationException("REST datasource requires 'url'.")

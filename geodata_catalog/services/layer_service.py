@@ -23,9 +23,11 @@ class LayerService:
         self._logger = logger
         self._layer_config_repository = layer_config_repository
 
-    def discover_layers(self, datasource: Datasource) -> list[LayerDefinition]:
+    def discover_layers(
+        self, datasource: Datasource, include_stats: bool = True
+    ) -> list[LayerDefinition]:
         connector = self._datasource_service.get_connector(datasource)
-        discovered = connector.get_layers()
+        discovered = connector.get_layers(include_stats=include_stats)
         configured = {
             layer.layer_name: layer
             for layer in self._layer_repository.list_by_datasource(datasource.id)

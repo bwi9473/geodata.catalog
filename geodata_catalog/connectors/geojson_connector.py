@@ -21,7 +21,7 @@ class GeoJsonConnector(BaseConnector):
         self._datasource_id = datasource_id
         self._config = config
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         layers: list[LayerDefinition] = []
         for file_path in self._resolve_paths():
             payload = self._load_and_validate_geojson(file_path)

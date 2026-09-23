@@ -28,7 +28,7 @@ class OracleConnector(BaseConnector):
         self._datasource_id = datasource_id
         self._config = config
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         rows = self._discover_spatial_objects()
         layers: list[LayerDefinition] = []
         for row in rows:
@@ -37,8 +37,13 @@ class OracleConnector(BaseConnector):
             geometry_column = row[2]
             srid = row[3]
             object_type = row[4]
-            geometry_type = self._detect_geometry_type(owner, object_name, geometry_column)
-            feature_count = self._get_feature_count(owner, object_name)
+            # Skip full-table scans (COUNT/geometry detection) for cheap listing calls.
+            geometry_type = (
+                self._detect_geometry_type(owner, object_name, geometry_column)
+                if include_stats
+                else None
+            )
+            feature_count = self._get_feature_count(owner, object_name) if include_stats else None
             uri = self._build_layer_uri(owner, object_name, geometry_column)
             display_name = f"{owner}.{object_name}"
             layers.append(

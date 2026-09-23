@@ -665,7 +665,8 @@ class GeoDataCatalogPlugin:
             return
         try:
             datasource = self._datasource_service.get_datasource(datasource_id)
-            layers = self._layer_service.discover_layers(datasource)
+            # Panel listing only needs names; skip expensive per-layer stats.
+            layers = self._layer_service.discover_layers(datasource, include_stats=False)
             self._layer_cache[datasource_id] = {layer.layer_name: layer for layer in layers}
             self._dock_widget.set_layers(datasource_id, layers)
         except GeoDataCatalogException as exc:
@@ -703,7 +704,8 @@ class GeoDataCatalogPlugin:
             for datasource in datasources:
                 unavailable = False
                 try:
-                    layers = self._layer_service.discover_layers(datasource)
+                    # Panel listing only needs names; skip expensive per-layer stats.
+                    layers = self._layer_service.discover_layers(datasource, include_stats=False)
                 except GeoDataCatalogException as exc:
                     layers = self._fallback_layers_for_unavailable_datasource(datasource)
                     unavailable = bool(layers)

@@ -11,8 +11,14 @@ class BaseConnector(ABC):
     """Base connector contract for all datasource types."""
 
     @abstractmethod
-    def get_layers(self) -> list[LayerDefinition]:
-        """Discover and return available layers."""
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
+        """Discover and return available layers.
+
+        ``include_stats`` controls whether expensive per-layer statistics
+        (feature count, geometry type detection) are computed. Callers that
+        only need the layer list (e.g. populating a panel) should pass
+        ``False`` to avoid scanning large tables/views.
+        """
 
     @abstractmethod
     def get_layer_metadata(self, layer_name: str) -> LayerDefinition:
