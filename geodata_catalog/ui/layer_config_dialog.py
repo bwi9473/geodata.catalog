@@ -24,6 +24,7 @@ try:
         QFileDialog,
         QFormLayout,
         QGroupBox,
+        QHeaderView,
         QHBoxLayout,
         QLabel,
         QLineEdit,
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover
     QFileDialog = None
     QFormLayout = None
     QGroupBox = None
+    QHeaderView = None
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
@@ -118,7 +120,7 @@ class LayerConfigDialog(QDialog):
         self._qml_style_path = ""
         self.setWindowTitle("Layer Configuration")
         self.setModal(True)
-        self.resize(800, 540)
+        self.resize(1100, 540)
         self._build_ui(display_name or layer_name, source_name or layer_name)
         if existing_config is not None:
             self._populate(existing_config, available_fields or [])
@@ -140,7 +142,7 @@ class LayerConfigDialog(QDialog):
         layout.addWidget(source)
 
         # -- Label column --
-        label_group = QGroupBox("Label Column")
+        label_group = QGroupBox("Single label")
         label_form = QFormLayout(label_group)
         self._layername_edit = QLineEdit()
         self._layername_edit.setPlaceholderText(
@@ -152,14 +154,10 @@ class LayerConfigDialog(QDialog):
             "Category shown in catalog (leave empty to use Miscellaneous)"
         )
         self._category_label_edit.setClearButtonEnabled(True)
-        self._label_edit = QLineEdit()
-        self._label_edit.setPlaceholderText("e.g. ROUTE_NAME  (leave empty to disable)")
-        self._label_edit.setClearButtonEnabled(True)
         self._enable_fl_filter_check = QCheckBox("Enable Flight Level Filter")
         self._enable_fl_filter_check.setChecked(True)
         label_form.addRow("Layer name", self._layername_edit)
         label_form.addRow("Category", self._category_label_edit)
-        label_form.addRow("Field name", self._label_edit)
         label_form.addRow("", self._enable_fl_filter_check)
 
         self._svg_marker_combo = QComboBox()
@@ -192,13 +190,14 @@ class LayerConfigDialog(QDialog):
 
         fields_group = QGroupBox("Layer Attributes")
         fields_layout = QVBoxLayout(fields_group)
-        self._fields_table = QTableWidget(0, 9)
+        self._fields_table = QTableWidget(0, 10)
         self._fields_table.setHorizontalHeaderLabels(
             [
                 "Field Name",
                 "Display Label",
                 "Data Type",
                 "Display As",
+                "Label Column",
                 "Search",
                 "Export",
                 "Key Column",
@@ -206,9 +205,15 @@ class LayerConfigDialog(QDialog):
                 "Filter By",
             ]
         )
-        self._fields_table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate([145, 145, 85, 110, 60, 60, 85, 80]):
+        self._fields_table.horizontalHeader().sectionClicked.connect(
+            self._on_attribute_header_clicked
+        )
+        self._fields_table.horizontalHeader().setStretchLastSection(False)
+        for column, width in enumerate([145, 145, 85, 110, 85, 60, 60, 85, 80, 120]):
             self._fields_table.setColumnWidth(column, width)
+        self._fields_table.horizontalHeader().setSectionResizeMode(
+            9, _enum(QHeaderView, "ResizeMode", "Fixed")
+        )
         self._fields_table.setMinimumHeight(250)
         fields_layout.addWidget(self._fields_table)
 
@@ -260,9 +265,16 @@ class LayerConfigDialog(QDialog):
         """Return the dialog state as a new :class:`LayerConfig`."""
         layername = self._layername_edit.text().strip() or None
         category_label = self._category_label_edit.text().strip() or None
-        label_col = self._label_edit.text().strip() or None
 
         field_columns = self._field_columns_from_table()
+        label_col = next(
+            (
+                str(self._fields_table.item(row, 0).text()).strip()
+                for row in range(self._fields_table.rowCount())
+                if self._fields_table.cellWidget(row, 4).isChecked()
+            ),
+            None,
+        )
         key_column = next((column["name"] for column in field_columns if column["key"]), None)
 
         return LayerConfig(
@@ -285,12 +297,11 @@ class LayerConfigDialog(QDialog):
     def _populate(self, config: LayerConfig, available_fields: list[dict[str, str]]) -> None:
         self._layername_edit.setText(config.layername or "")
         self._category_label_edit.setText(config.category_label or "")
-        self._label_edit.setText(config.label_column or "")
         self._set_svg_marker_path(config.svg_marker_path or "")
         self._set_qml_style_path(config.qml_style_path or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
         field_columns = self._merge_field_columns(config.field_columns, available_fields)
-        self._populate_field_columns(field_columns)
+        self._populate_field_columns(field_columns, config.label_column)
 
     @staticmethod
     def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
@@ -331,7 +342,26 @@ class LayerConfigDialog(QDialog):
             })
         return merged or list(configured_by_name.values())
 
-    def _populate_field_columns(self, columns: list[dict[str, str | bool]]) -> None:
+    def _populate_field_columns(
+        self,
+        columns: list[dict[str, str | bool]],
+        label_column: str | None = None,
+    ) -> None:
+        field_names = []
+        seen_names: set[str] = set()
+        for field_column in columns:
+            field_name = str(field_column.get("name", "")).strip()
+            if field_name and field_name.casefold() not in seen_names:
+                field_names.append(field_name)
+                seen_names.add(field_name.casefold())
+        filter_by_width = max(
+            120,
+            max(
+                (self._fields_table.fontMetrics().horizontalAdvance(name) for name in field_names),
+                default=0,
+            ) + 45,
+        )
+        self._fields_table.setColumnWidth(9, filter_by_width)
         ordered = sorted(
             enumerate(columns),
             key=lambda value: (
@@ -351,25 +381,68 @@ class LayerConfigDialog(QDialog):
             self._fields_table.setItem(row, 1, QTableWidgetItem(str(column.get("label", name))))
             self._set_type_combo_at_row(self._fields_table, row, str(column.get("type", "varchar")))
             self._set_input_type_combo_at_row(self._fields_table, row, str(column.get("input_type", "text field")))
-            for index, key in ((4, "search"), (5, "export"), (6, "key"), (7, "use_distinct")):
+            for index, key in (
+                (4, "label_column"),
+                (5, "search"),
+                (6, "export"),
+                (7, "key"),
+                (8, "use_distinct"),
+            ):
                 checkbox = QCheckBox()
-                checkbox.setChecked(bool(column.get(key, False)))
+                checkbox.setChecked(
+                    name.casefold() == str(label_column or "").casefold()
+                    if key == "label_column"
+                    else bool(column.get(key, False))
+                )
                 self._fields_table.setCellWidget(row, index, checkbox)
-                if key == "key":
+                if key in ("label_column", "key"):
                     checkbox.toggled.connect(
-                        lambda checked, current_row=row: self._on_key_column_toggled(current_row, checked)
+                        lambda checked, current_row=row, current_column=index: self._on_exclusive_checkbox_toggled(
+                            current_column, current_row, checked
+                        )
                     )
-            filter_by_edit = QLineEdit(str(column.get("filter_by", "") or ""))
-            filter_by_edit.setPlaceholderText("parent field name (optional)")
-            filter_by_edit.setClearButtonEnabled(True)
-            self._fields_table.setCellWidget(row, 8, filter_by_edit)
+            filter_by_combo = QComboBox()
+            filter_by_combo.addItem("")
+            filter_by_combo.addItems(field_names)
+            filter_by_combo.setCurrentText(str(column.get("filter_by", "") or ""))
+            self._fields_table.setCellWidget(row, 9, filter_by_combo)
 
-    def _on_key_column_toggled(self, selected_row: int, checked: bool) -> None:
+    def _on_exclusive_checkbox_toggled(
+        self,
+        selected_column: int,
+        selected_row: int,
+        checked: bool,
+    ) -> None:
         if not checked:
             return
         for row in range(self._fields_table.rowCount()):
             if row != selected_row:
-                self._fields_table.cellWidget(row, 6).setChecked(False)
+                self._fields_table.cellWidget(row, selected_column).setChecked(False)
+
+    def _on_attribute_header_clicked(self, column: int) -> None:
+        if column not in (4, 5, 6, 7, 8):
+            return
+        checkboxes = [
+            self._fields_table.cellWidget(row, column)
+            for row in range(self._fields_table.rowCount())
+        ]
+        checkboxes = [checkbox for checkbox in checkboxes if checkbox is not None]
+        if not checkboxes:
+            return
+        if column in (4, 7):
+            selected = next((checkbox for checkbox in checkboxes if checkbox.isChecked()), None)
+            for checkbox in checkboxes:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+            if selected is None:
+                checkboxes[0].setChecked(True)
+            return
+        checked = not all(checkbox.isChecked() for checkbox in checkboxes)
+        for checkbox in checkboxes:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
 
     @classmethod
     def _aviation_svg_markers(cls) -> list[tuple[str, str]]:
@@ -493,20 +566,20 @@ class LayerConfigDialog(QDialog):
                 continue
             type_combo = self._fields_table.cellWidget(row, 2)
             input_type_combo = self._fields_table.cellWidget(row, 3)
-            filter_by_edit = self._fields_table.cellWidget(row, 8)
+            filter_by_combo = self._fields_table.cellWidget(row, 9)
             entry: dict[str, str | bool] = {
                 "name": name,
                 "label": label_item.text().strip() if label_item and label_item.text().strip() else name,
                 "type": type_combo.currentText().strip().lower() if type_combo else "varchar",
                 "input_type": input_type_combo.currentText().strip().lower() if input_type_combo else "text field",
-                "search": bool(self._fields_table.cellWidget(row, 4).isChecked()),
-                "export": bool(self._fields_table.cellWidget(row, 5).isChecked()),
-                "key": bool(self._fields_table.cellWidget(row, 6).isChecked()),
-                "use_distinct": bool(self._fields_table.cellWidget(row, 7).isChecked()),
+                "search": bool(self._fields_table.cellWidget(row, 5).isChecked()),
+                "export": bool(self._fields_table.cellWidget(row, 6).isChecked()),
+                "key": bool(self._fields_table.cellWidget(row, 7).isChecked()),
+                "use_distinct": bool(self._fields_table.cellWidget(row, 8).isChecked()),
                 "position": self._field_positions.get(row, row),
             }
-            if filter_by_edit and filter_by_edit.text().strip():
-                entry["filter_by"] = filter_by_edit.text().strip()
+            if filter_by_combo and filter_by_combo.currentText().strip():
+                entry["filter_by"] = filter_by_combo.currentText().strip()
             columns.append(entry)
         return columns
 

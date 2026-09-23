@@ -103,7 +103,16 @@ class OracleConnector(BaseConnector):
 
     def get_layer_fields(self, layer_name: str) -> list[dict[str, str | int]]:
         """Return table or view attributes without requiring a QGIS provider key."""
-        metadata = self.get_layer_metadata(layer_name)
+        metadata = next(
+            (
+                layer
+                for layer in self.get_layers(include_stats=False)
+                if layer.layer_name == layer_name
+            ),
+            None,
+        )
+        if metadata is None:
+            raise LayerLoadException(f"Oracle layer '{layer_name}' not found.")
         owner = metadata.owner or ""
         object_name = metadata.object_name or ""
         if not self._is_safe_identifier(owner) or not self._is_safe_identifier(object_name):
@@ -147,6 +156,23 @@ class OracleConnector(BaseConnector):
     def _discover_spatial_objects(self) -> list[tuple[Any, ...]]:
         owner_filter = self._config.get("schema")
         query = """
+            WITH object_candidates AS (
+                SELECT
+                    owner,
+                    object_name,
+                    object_type,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY owner, object_name
+                        ORDER BY CASE object_type
+                            WHEN 'MATERIALIZED VIEW' THEN 1
+                            WHEN 'VIEW' THEN 2
+                            WHEN 'TABLE' THEN 3
+                            ELSE 4
+                        END
+                    ) AS object_rank
+                FROM all_objects
+                WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+            )
             SELECT
                 m.owner,
                 m.table_name,
@@ -154,10 +180,10 @@ class OracleConnector(BaseConnector):
                 m.srid,
                 o.object_type
             FROM all_sdo_geom_metadata m
-            JOIN all_objects o
+            JOIN object_candidates o
                 ON o.owner = m.owner
                AND o.object_name = m.table_name
-               AND o.object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+               AND o.object_rank = 1
             JOIN all_tab_columns c
                 ON c.owner = m.owner
                AND c.table_name = m.table_name
