@@ -18,6 +18,7 @@ try:
         QgsGeometry,
         QgsMapLayerType,
         QgsMarkerSymbol,
+        QgsPalLayerSettings,
         QgsPointXY,
         QgsProject,
         QgsRasterLayer,
@@ -26,6 +27,7 @@ try:
         QgsRuleBasedRenderer,
         QgsSvgMarkerSymbolLayer,
         QgsSymbol,
+        QgsVectorLayerSimpleLabeling,
         QgsVectorLayer,
         QgsWkbTypes,
     )
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover
     QgsGeometry = None
     QgsMapLayerType = None
     QgsMarkerSymbol = None
+    QgsPalLayerSettings = None
     QgsPointXY = None
     QgsProject = None
     QgsRasterLayer = None
@@ -50,6 +53,7 @@ except ImportError:  # pragma: no cover
     QgsRuleBasedRenderer = None
     QgsSvgMarkerSymbolLayer = None
     QgsSymbol = None
+    QgsVectorLayerSimpleLabeling = None
     QgsVectorLayer = None
     QgsWkbTypes = None
     QVariant = None
@@ -858,10 +862,26 @@ class LayerToolboxService:
                 self._logger.warning("QGIS Extract Vertices did not produce a valid output layer.")
                 return None
             output_layer.setName(layer_name)
+            self._apply_vertex_labels(output_layer)
             return output_layer
         except Exception as exc:
             self._logger.warning(f"Failed to extract vertices with QGIS: {exc}")
             return None
+
+    def _apply_vertex_labels(self, layer) -> None:
+        if QgsPalLayerSettings is None or QgsVectorLayerSimpleLabeling is None:
+            return
+        if not hasattr(layer, "setLabeling") or not hasattr(layer, "setLabelsEnabled"):
+            return
+
+        settings = QgsPalLayerSettings()
+        settings.fieldName = "vertex_index"
+        settings.isExpression = False
+        settings.enabled = True
+        layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+        layer.setLabelsEnabled(True)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
 
     def _create_interactive_marker_layer(self, canvas):
         if QgsVectorLayer is None:

@@ -344,3 +344,42 @@ def test_vertex_source_layer_accepts_polygon_and_linestring(monkeypatch):
     assert service._is_vertex_source_layer(polygon_layer) is True
     assert service._is_vertex_source_layer(line_layer) is True
     assert service._is_vertex_source_layer(point_layer) is False
+
+
+def test_apply_vertex_labels_uses_vertex_index_by_default(monkeypatch):
+    class _FakePalLayerSettings:
+        def __init__(self):
+            self.fieldName = None
+            self.isExpression = None
+            self.enabled = None
+
+    class _FakeSimpleLabeling:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class _FakeLayer:
+        def __init__(self):
+            self.labeling = None
+            self.labels_enabled = False
+            self.repaint_calls = 0
+
+        def setLabeling(self, labeling):
+            self.labeling = labeling
+
+        def setLabelsEnabled(self, enabled):
+            self.labels_enabled = enabled
+
+        def triggerRepaint(self):
+            self.repaint_calls += 1
+
+    monkeypatch.setattr(layer_toolbox_module, "QgsPalLayerSettings", _FakePalLayerSettings)
+    monkeypatch.setattr(layer_toolbox_module, "QgsVectorLayerSimpleLabeling", _FakeSimpleLabeling)
+    layer = _FakeLayer()
+
+    LayerToolboxService(logger=_FakeLogger(), project=None)._apply_vertex_labels(layer)
+
+    assert layer.labeling.settings.fieldName == "vertex_index"
+    assert layer.labeling.settings.isExpression is False
+    assert layer.labeling.settings.enabled is True
+    assert layer.labels_enabled is True
+    assert layer.repaint_calls == 1
