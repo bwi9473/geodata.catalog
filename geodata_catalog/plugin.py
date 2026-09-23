@@ -614,7 +614,22 @@ class GeoDataCatalogPlugin:
         if self._dock_widget is None:
             return
         datasources = self._datasource_service.list_datasources()
-        self._dock_widget.set_datasources(datasources)
+        layers_by_datasource: dict[str, list[LayerDefinition]] = {}
+        for datasource in datasources:
+            try:
+                layers = self._layer_service.discover_layers(datasource, include_stats=False)
+            except GeoDataCatalogException as exc:
+                layers = self._fallback_layers_for_unavailable_datasource(datasource)
+                if layers:
+                    self._logger.warning(
+                        f"Datasource unavailable while building catalog tree for "
+                        f"'{datasource.name}': {exc}"
+                    )
+            layers_by_datasource[datasource.id] = layers
+            self._layer_cache[datasource.id] = {
+                layer.layer_name: layer for layer in layers
+            }
+        self._dock_widget.set_datasources(datasources, layers_by_datasource)
         if self._loadable_layers_dock is not None:
             self._refresh_all_layers_view()
 
@@ -679,7 +694,12 @@ class GeoDataCatalogPlugin:
             self._layer_cache[datasource_id] = {layer.layer_name: layer for layer in layers}
             self._dock_widget.set_layers(datasource_id, layers)
         except GeoDataCatalogException as exc:
-            datasource = self._datasource_service.get_datasource(datasource_id)
+            try:
+                datasource = self._datasource_service.get_datasource(datasource_id)
+            except GeoDataCatalogException:
+                # The selection may have fired while a datasource was being deleted.
+                self._layer_cache.pop(datasource_id, None)
+                return
             fallback_layers = self._fallback_layers_for_unavailable_datasource(datasource)
             if fallback_layers:
                 self._layer_cache[datasource_id] = {

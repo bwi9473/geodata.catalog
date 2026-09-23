@@ -6,21 +6,27 @@ from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.services.style_service import generate_style_preview_icon
 
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
+    QApplication,
+    QComboBox,
     QDockWidget,
+    QFrame,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QPushButton,
+    QStyle,
     QTreeWidget,
     QTreeWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
+from qgis.PyQt.QtGui import QIcon
 
 
 USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
@@ -77,6 +83,10 @@ class CatalogDockWidget(QDockWidget):
     def __init__(self, parent=None) -> None:
         super().__init__("Data Source Configuration", parent)
         self._datasource_items: dict[str, QTreeWidgetItem] = {}
+        self._datasources: list[Datasource] = []
+        self._layers_by_datasource: dict[str, list[LayerDefinition]] = {}
+        self._grouping_mode = "datasource"
+        self._rendering_tree = False
         self._all_layers_mode = False
         self._build_ui()
 
@@ -90,50 +100,89 @@ class CatalogDockWidget(QDockWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        explore_group = QGroupBox("Configuration")
-        explore_layout = QVBoxLayout(explore_group)
-        explore_layout.setSpacing(8)
-
-        self.datasource_tree = QTreeWidget()
-        self.datasource_tree.setHeaderHidden(True)
-        self.datasource_tree.itemSelectionChanged.connect(self._on_datasource_changed)
-        explore_layout.addWidget(self.datasource_tree, stretch=2)
-
-        self.layers_list = QListWidget()
-        self.layers_list.itemDoubleClicked.connect(self._on_layer_double_clicked)
-        self.layers_list.setContextMenuPolicy(_CUSTOM_CTX)
-        self.layers_list.customContextMenuRequested.connect(self._on_layers_context_menu)
-        explore_layout.addWidget(self.layers_list, stretch=3)
-
-        source_buttons = QHBoxLayout()
-        self.add_btn = QPushButton("Add Source")
-        self.edit_btn = QPushButton("Edit Source")
-        self.delete_btn = QPushButton("Delete Source")
-        self.refresh_btn = QPushButton("Refresh")
-        self.export_btn = QPushButton("Export to Excel")
-        self.configure_btn = QPushButton("Configure")
-
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(4, 0, 4, 0)
+        action_row.setSpacing(3)
+        self.add_btn = self._toolbar_button(
+            ":/images/themes/default/mActionAddLayer.svg", "Add Source"
+        )
+        self.edit_btn = self._toolbar_button(
+            ":/images/themes/default/mActionOptions.svg", "Edit Source"
+        )
+        self.delete_btn = self._toolbar_button(
+            ":/images/themes/default/mActionDeleteSelected.svg", "Delete Source"
+        )
+        self.refresh_btn = self._toolbar_button(
+            ":/images/themes/default/mActionRefresh.svg", "Refresh Source"
+        )
+        self.export_btn = self._toolbar_button(
+            ":/images/themes/default/mActionFileSave.svg",
+            "Export Layer Configuration",
+        )
         self.add_btn.clicked.connect(self.add_source_requested.emit)
         self.edit_btn.clicked.connect(self._emit_edit)
         self.delete_btn.clicked.connect(self._emit_delete)
         self.refresh_btn.clicked.connect(self._emit_refresh)
         self.export_btn.clicked.connect(self.export_requested.emit)
-        self.configure_btn.clicked.connect(self._emit_edit_layer_config)
+        for button in (
+            self.add_btn,
+            self.edit_btn,
+            self.delete_btn,
+            self.refresh_btn,
+            self.export_btn,
+        ):
+            action_row.addWidget(button)
+        action_row.addStretch(1)
+        root.addLayout(action_row)
 
-        source_buttons.addWidget(self.add_btn)
-        source_buttons.addWidget(self.edit_btn)
-        source_buttons.addWidget(self.delete_btn)
-        source_buttons.addWidget(self.refresh_btn)
-        explore_layout.addLayout(source_buttons)
+        grouping_toolbox = QFrame()
+        grouping_toolbox.setProperty("groupingToolbox", True)
+        grouping_row = QHBoxLayout(grouping_toolbox)
+        grouping_row.setContentsMargins(6, 3, 6, 3)
+        grouping_row.setSpacing(6)
+        grouping_row.addWidget(QLabel("Group by"))
+        self.grouping_combo = QComboBox()
+        self.grouping_combo.addItems(["Datasource", "Category"])
+        self.grouping_combo.setToolTip("Choose how sources and layers are grouped")
+        self.grouping_combo.currentTextChanged.connect(self._on_grouping_changed)
+        grouping_row.addWidget(self.grouping_combo)
+        grouping_row.addStretch(1)
+        root.addWidget(grouping_toolbox)
 
-        layer_buttons = QHBoxLayout()
-        layer_buttons.addWidget(self.export_btn)
-        layer_buttons.addWidget(self.configure_btn)
-        explore_layout.addLayout(layer_buttons)
+        explore_group = QGroupBox("Configuration")
+        explore_layout = QVBoxLayout(explore_group)
+        explore_layout.setSpacing(8)
+
+        self.datasource_tree = QTreeWidget()
+        self.datasource_tree.setColumnCount(2)
+        self.datasource_tree.setHeaderHidden(True)
+        tree_header = self.datasource_tree.header()
+        resize_mode = getattr(QHeaderView, "ResizeMode", QHeaderView)
+        tree_header.setStretchLastSection(False)
+        tree_header.setSectionResizeMode(0, getattr(resize_mode, "Stretch"))
+        tree_header.setSectionResizeMode(1, getattr(resize_mode, "Fixed"))
+        self.datasource_tree.setColumnWidth(1, 96)
+        self.datasource_tree.itemSelectionChanged.connect(self._on_datasource_changed)
+        self.datasource_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
+        explore_layout.addWidget(self.datasource_tree, stretch=2)
+
+        self.layers_list = QListWidget()
 
         root.addWidget(explore_group)
 
         self.setWidget(body)
+
+    def _toolbar_button(self, icon_path: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setIcon(QIcon(icon_path))
+        button.setIconSize(QSize(18, 18))
+        button.setFixedSize(28, 28)
+        button.setAutoRaise(True)
+        button.setToolTip(tooltip)
+        return button
+
+    def _on_grouping_changed(self, value: str) -> None:
+        self._set_grouping_mode("category" if value == "Category" else "datasource")
 
     def apply_theme(self, ui_colors: dict[str, str]) -> None:
         primary = str(ui_colors.get("primary", "#59A947"))
@@ -154,79 +203,219 @@ class CatalogDockWidget(QDockWidget):
                     f"QTreeWidget, QListWidget {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
                     f"QTreeWidget::item, QListWidget::item {{ min-height: 30px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
                     f"QTreeWidget::item:selected, QListWidget::item:selected {{ background: {primary}; color: {primary_text}; }}",
+                    f"QFrame[groupingToolbox='true'] {{ background: {panel_background}; border: 1px solid {border}; border-radius: 3px; }}",
+                    f"QFrame[groupingToolbox='true'] QLabel {{ color: {header_text}; font-weight: 600; }}",
+                    f"QFrame[groupingToolbox='true'] QComboBox {{ min-height: 24px; padding: 1px 22px 1px 6px; background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 3px; }}",
                     f"QPushButton {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
                     f"QPushButton:hover {{ border-color: {primary}; background: {header_background}; color: {header_text}; }}",
                     f"QPushButton:pressed {{ background: {primary}; color: {primary_text}; }}",
                     f"QPushButton:disabled {{ color: {border}; background: {panel_background}; }}",
+                    f"QToolButton {{ color: {text}; border: 1px solid transparent; border-radius: 3px; padding: 2px; }}",
+                    f"QToolButton:hover {{ background: {header_background}; border-color: {border}; }}",
+                    f"QToolButton:pressed {{ background: {primary}; border-color: {primary}; }}",
+                    f"QToolButton:checked {{ background: {primary}; color: {primary_text}; border-color: {primary}; }}",
                 ]
             )
         )
 
-    def set_datasources(self, datasources: list[Datasource]) -> None:
-        self.datasource_tree.clear()
-        self._datasource_items.clear()
+    def set_datasources(
+        self,
+        datasources: list[Datasource],
+        layers_by_datasource: dict[str, list[LayerDefinition]] | None = None,
+    ) -> None:
+        self._datasources = list(datasources)
+        self._layers_by_datasource = {
+            datasource_id: list(layers)
+            for datasource_id, layers in (layers_by_datasource or {}).items()
+        }
+        self._render_tree()
 
-        database_root = QTreeWidgetItem(["Database Sources"])
-        oracle_root = QTreeWidgetItem(["Oracle"])
-        database_root.addChild(oracle_root)
+    def _set_grouping_mode(self, mode: str) -> None:
+        if mode not in {"datasource", "category"}:
+            return
+        self._grouping_mode = mode
+        self._render_tree()
 
-        rest_root = QTreeWidgetItem(["REST Sources"])
-        file_root = QTreeWidgetItem(["File Sources"])
-        geojson_root = QTreeWidgetItem(["GeoJSON"])
-        kml_root = QTreeWidgetItem(["KML"])
-        file_root.addChild(geojson_root)
-        file_root.addChild(kml_root)
+    def _render_tree(self) -> None:
+        self._rendering_tree = True
+        try:
+            self.datasource_tree.clear()
+            self._datasource_items.clear()
+            if self._grouping_mode == "category":
+                self._render_category_tree()
+            else:
+                self._render_datasource_tree()
+        finally:
+            self._rendering_tree = False
 
-        self.datasource_tree.addTopLevelItem(database_root)
-        self.datasource_tree.addTopLevelItem(rest_root)
-        self.datasource_tree.addTopLevelItem(file_root)
+    def _render_datasource_tree(self) -> None:
+        file_layers: dict[DatasourceType, list[LayerDefinition]] = {
+            DatasourceType.KML: [],
+            DatasourceType.GEOJSON: [],
+        }
+        for datasource in self._datasources:
+            layers = self._layers_by_datasource.get(datasource.id, [])
+            if datasource.datasource_type in file_layers:
+                file_layers[datasource.datasource_type].extend(layers)
+                continue
+            self._add_datasource_item(datasource, layers)
 
-        for datasource in datasources:
-            item = QTreeWidgetItem([datasource.name])
-            item.setData(0, USER_ROLE, datasource.id)
-            self._datasource_items[datasource.id] = item
+        for datasource_type, layers in file_layers.items():
+            if not any(
+                datasource.datasource_type is datasource_type for datasource in self._datasources
+            ):
+                continue
+            type_label = datasource_type.value.upper()
+            type_item = QTreeWidgetItem([f"{type_label} (COUNT = {len(layers)})"])
+            type_item.setIcon(0, self._datasource_icon(datasource_type))
+            self.datasource_tree.addTopLevelItem(type_item)
+            self._add_layer_items(type_item, layers)
+            type_item.setExpanded(False)
 
-            if datasource.datasource_type is DatasourceType.ORACLE:
-                oracle_root.addChild(item)
-            elif datasource.datasource_type is DatasourceType.REST:
-                rest_root.addChild(item)
-            elif datasource.datasource_type is DatasourceType.GEOJSON:
-                geojson_root.addChild(item)
-            elif datasource.datasource_type is DatasourceType.KML:
-                kml_root.addChild(item)
+    def _render_category_tree(self) -> None:
+        grouped_layers: dict[str, list[tuple[LayerDefinition, DatasourceType]]] = {}
+        for datasource in self._datasources:
+            datasource_type = datasource.datasource_type
+            for layer in self._layers_by_datasource.get(datasource.id, []):
+                category = _display_category_label(layer.business_group or "")
+                grouped_layers.setdefault(category, []).append((layer, datasource_type))
 
-        self.datasource_tree.expandAll()
+        for category in sorted(grouped_layers, key=str.casefold):
+            category_layers = grouped_layers[category]
+            category_item = QTreeWidgetItem(
+                [f"{category} (COUNT = {len(category_layers)})"]
+            )
+            self.datasource_tree.addTopLevelItem(category_item)
+            for layer, datasource_type in sorted(
+                category_layers, key=lambda value: value[0].display_name.casefold()
+            ):
+                self._add_layer_item(
+                    category_item,
+                    layer,
+                    category,
+                    self._datasource_icon(datasource_type),
+                )
+            category_item.setExpanded(False)
+
+    def _add_datasource_item(
+        self,
+        datasource: Datasource,
+        layers: list[LayerDefinition],
+        parent_item: QTreeWidgetItem | None = None,
+    ) -> QTreeWidgetItem:
+        item = QTreeWidgetItem([f"{datasource.name} (COUNT = {len(layers)})"])
+        item.setData(0, USER_ROLE, datasource.id)
+        item.setIcon(0, self._datasource_icon(datasource.datasource_type))
+        self._datasource_items[datasource.id] = item
+        if parent_item is None:
+            self.datasource_tree.addTopLevelItem(item)
+        else:
+            parent_item.addChild(item)
+        self._add_layer_items(item, layers)
+        item.setExpanded(False)
+        return item
+
+    @staticmethod
+    def _datasource_icon(datasource_type: DatasourceType) -> QIcon:
+        icon_paths = {
+            DatasourceType.ORACLE: ":/images/themes/default/mIconDbSchema.svg",
+            DatasourceType.GEOJSON: ":/images/themes/default/mIconFile.svg",
+            DatasourceType.KML: ":/images/themes/default/mIconFile.svg",
+            DatasourceType.REST: ":/images/themes/default/mActionAddWmsLayer.svg",
+        }
+        return QIcon(icon_paths.get(datasource_type, ":/images/themes/default/mActionAddLayer.svg"))
 
     def set_layers(self, datasource_id: str, layers: list[LayerDefinition]) -> None:
         self._all_layers_mode = False
         self.layers_list.clear()
+        self._layers_by_datasource[datasource_id] = list(layers)
+        if self._grouping_mode == "category":
+            self._render_tree()
+            return
+        datasource_item = self._datasource_items.get(datasource_id)
+        if datasource_item is None:
+            return
+        datasource_item.setText(0, self._datasource_label(datasource_item, len(layers)))
+        self._remove_layer_items(datasource_item)
+        self._add_layer_items(datasource_item, layers)
+
+    def _datasource_label(self, item: QTreeWidgetItem, count: int) -> str:
+        label = item.text(0)
+        if " (COUNT = " in label:
+            label = label.split(" (COUNT = ", 1)[0]
+        return f"{label} (COUNT = {count})"
+
+    def _remove_layer_items(self, datasource_item: QTreeWidgetItem) -> None:
+        while datasource_item.childCount():
+            datasource_item.takeChild(0)
+
+    def _add_layer_items(
+        self, datasource_item: QTreeWidgetItem, layers: list[LayerDefinition]
+    ) -> None:
         grouped_layers: dict[str, list[LayerDefinition]] = {}
         for layer in layers:
             category = _display_category_label(layer.business_group or "")
             grouped_layers.setdefault(category, []).append(layer)
 
-        for category in sorted(grouped_layers.keys(), key=str.casefold):
-            header_item = QListWidgetItem(f"Category: {category}")
-            header_font = header_item.font()
-            header_font.setBold(True)
-            header_item.setFont(header_font)
-            if _NO_ITEM_FLAGS is not None:
-                header_item.setFlags(_NO_ITEM_FLAGS)
-            self.layers_list.addItem(header_item)
-            for layer in sorted(grouped_layers[category], key=lambda l: l.display_name.casefold()):
-                item = QListWidgetItem(f"  {layer.display_name}")
-                item.setData(USER_ROLE, (datasource_id, layer.layer_name))
-                style_icon = generate_style_preview_icon(layer.default_style_file)
-                if style_icon is not None:
-                    item.setIcon(style_icon)
-                item.setToolTip(
-                    f"Category: {category}\n"
-                    f"{layer.display_name}\nGeometry: {layer.geometry_type or 'Unknown'}\n"
-                    f"CRS: {layer.default_crs or 'Not set'}\n"
-                    f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
-                    + (f"\nStyle: {_style_display_name(layer.default_style_file)}" if layer.default_style_file else "")
+        for category in sorted(grouped_layers, key=str.casefold):
+            category_layers = grouped_layers[category]
+            category_item = QTreeWidgetItem([f"{category} (COUNT = {len(category_layers)})"])
+            datasource_item.addChild(category_item)
+            for layer in sorted(category_layers, key=lambda value: value.display_name.casefold()):
+                self._add_layer_item(category_item, layer, category)
+
+    def _add_layer_item(
+        self,
+        parent_item: QTreeWidgetItem,
+        layer: LayerDefinition,
+        category: str,
+        icon: QIcon | None = None,
+    ) -> None:
+        item = QTreeWidgetItem([layer.display_name, ""])
+        item.setData(0, USER_ROLE, (layer.datasource_id, layer.layer_name))
+        if icon is None:
+            icon = generate_style_preview_icon(layer.default_style_file)
+        if icon is not None:
+            item.setIcon(0, icon)
+        item.setToolTip(0,
+            f"Category: {category}\n{layer.display_name}\n"
+            f"Geometry: {layer.geometry_type or 'Unknown'}\n"
+            f"CRS: {layer.default_crs or 'Not set'}\n"
+            f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
+            + (f"\nStyle: {_style_display_name(layer.default_style_file)}" if layer.default_style_file else "")
+        )
+        parent_item.addChild(item)
+        edit_button = QToolButton(self.datasource_tree)
+        edit_button.setAutoRaise(True)
+        edit_button.setFixedSize(90, 28)
+        edit_button.setIconSize(QSize(16, 16))
+        edit_button.setText("Edit Layer")
+        tool_button_style = getattr(Qt, "ToolButtonTextBesideIcon", None)
+        if tool_button_style is None:
+            tool_button_style = Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        edit_button.setToolButtonStyle(tool_button_style)
+        edit_button.setToolTip("Edit the layer configuration")
+        edit_button.setIcon(self._edit_icon())
+        edit_button.clicked.connect(
+            lambda _checked=False, datasource_id=layer.datasource_id, layer_name=layer.layer_name:
+            self.edit_layer_config_requested.emit(datasource_id, layer_name)
+        )
+        self.datasource_tree.setItemWidget(item, 1, edit_button)
+
+    @staticmethod
+    def _edit_icon():
+        icon = QIcon(":/images/themes/default/mActionOptions.svg")
+        if icon.isNull():
+            standard_pixmap = getattr(QStyle, "SP_FileDialogDetailedView", None)
+            if standard_pixmap is None:
+                standard_pixmap = getattr(
+                    getattr(QStyle, "StandardPixmap", None),
+                    "SP_FileDialogDetailedView",
+                    None,
                 )
-                self.layers_list.addItem(item)
+            if standard_pixmap is not None:
+                icon = QApplication.style().standardIcon(standard_pixmap)
+        return icon
 
     def set_all_layers(self, rows: list[dict[str, str | LayerDefinition]]) -> None:
         """Render one combined list with loadable layers from all datasources."""
@@ -316,13 +505,25 @@ class CatalogDockWidget(QDockWidget):
         item = self.datasource_tree.currentItem()
         if item is None:
             return None
-        return item.data(0, USER_ROLE)
+        payload = item.data(0, USER_ROLE)
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, tuple) and payload:
+            return payload[0]
+        parent = item.parent()
+        while parent is not None:
+            parent_payload = parent.data(0, USER_ROLE)
+            if isinstance(parent_payload, str):
+                return parent_payload
+            parent = parent.parent()
+        return None
 
     def _on_datasource_changed(self) -> None:
-        if self._all_layers_mode:
+        if self._all_layers_mode or self._rendering_tree:
             return
-        datasource_id = self.selected_datasource_id()
-        if datasource_id:
+        item = self.datasource_tree.currentItem()
+        datasource_id = item.data(0, USER_ROLE) if item is not None else None
+        if isinstance(datasource_id, str):
             self.refresh_requested.emit(datasource_id)
 
     def _emit_edit(self) -> None:
@@ -341,14 +542,18 @@ class CatalogDockWidget(QDockWidget):
             self.refresh_requested.emit(datasource_id)
 
     def _emit_edit_layer_config(self) -> None:
-        item = self.layers_list.currentItem()
-        if item is None:
-            return
-        payload = item.data(USER_ROLE)
-        if not payload or len(payload) < 2:
-            return
-        datasource_id, layer_name = payload[0], payload[1]
-        self.edit_layer_config_requested.emit(datasource_id, layer_name)
+        self._emit_selected_layer_config()
+
+    def _emit_selected_layer_config(self) -> None:
+        item = self.datasource_tree.currentItem()
+        payload = item.data(0, USER_ROLE) if item is not None else None
+        if isinstance(payload, tuple) and len(payload) >= 2:
+            self.edit_layer_config_requested.emit(payload[0], payload[1])
+
+    def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        payload = item.data(0, USER_ROLE)
+        if isinstance(payload, tuple) and len(payload) >= 2:
+            self.edit_layer_config_requested.emit(payload[0], payload[1])
 
     def _on_layer_double_clicked(self, item: QListWidgetItem) -> None:
         payload = item.data(USER_ROLE)
