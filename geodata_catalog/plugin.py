@@ -197,16 +197,28 @@ class GeoDataCatalogPlugin:
         self._refresh_all_layers_view()
 
     def _configure_as_floating_window(self, dock_widget) -> None:
+        if not hasattr(dock_widget, "setAllowedAreas"):
+            return
+
+        dock_widget_area = getattr(Qt, "DockWidgetArea", None)
+        if dock_widget_area is not None:
+            dock_areas = (
+                dock_widget_area.LeftDockWidgetArea
+                | dock_widget_area.RightDockWidgetArea
+                | dock_widget_area.TopDockWidgetArea
+                | dock_widget_area.BottomDockWidgetArea
+            )
+        else:
+            dock_areas = (
+                Qt.LeftDockWidgetArea
+                | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea
+                | Qt.BottomDockWidgetArea
+            )
+        dock_widget.setAllowedAreas(dock_areas)
+
         if hasattr(dock_widget, "setFloating"):
             dock_widget.setFloating(True)
-
-        no_dock_area = getattr(Qt, "NoDockWidgetArea", None)
-        if no_dock_area is None:
-            dock_widget_area = getattr(Qt, "DockWidgetArea", None)
-            if dock_widget_area is not None:
-                no_dock_area = getattr(dock_widget_area, "NoDockWidgetArea", None)
-        if no_dock_area is not None and hasattr(dock_widget, "setAllowedAreas"):
-            dock_widget.setAllowedAreas(no_dock_area)
 
     def _size_data_panel_window(self, widget) -> None:
         if not hasattr(widget, "resize"):
@@ -216,13 +228,13 @@ class GeoDataCatalogPlugin:
         target_width = target_geometry.width() if target_geometry is not None else available_geometry.width()
         target_height = target_geometry.height() if target_geometry is not None else available_geometry.height()
 
-        width = max(440, min(520, int(target_width * 0.28)))
+        width = max(1140, min(1240, int(target_width * 0.62)))
         height = max(620, min(820, int(target_height * 0.82)))
         width = min(width, max(320, available_geometry.width() - 48))
         height = min(height, max(420, available_geometry.height() - 48))
 
         if hasattr(widget, "setMinimumSize"):
-            widget.setMinimumSize(440, 520)
+            widget.setMinimumSize(1140, 520)
         widget.resize(width, height)
 
     def _size_configuration_window(self, widget) -> None:
@@ -1748,5 +1760,3 @@ class GeoDataCatalogPlugin:
         if no_button is not None:
             return no_button
         return QMessageBox.StandardButton.No
-
-

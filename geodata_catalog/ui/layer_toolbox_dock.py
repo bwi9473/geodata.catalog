@@ -95,6 +95,16 @@ class LayerToolboxDock(QDockWidget):
         self._fl_upper_field_combo = None
         self._fl_upper_label = None
         self._apply_fl_rules_btn = None
+        self._theme_colors = {
+            "primary": "#3B82B6",
+            "primary_text": "#FFFFFF",
+            "panel_background": "#E7E7E7",
+            "window_background": "#F0F0F0",
+            "text": "#2B2B2B",
+            "border": "#B8B8B8",
+            "hover_background": "#F3F9F4",
+        }
+        self._body = None
 
         self._build_ui()
         self.refresh_layers()
@@ -103,6 +113,7 @@ class LayerToolboxDock(QDockWidget):
 
     def _build_ui(self) -> None:
         body = QWidget(self)
+        self._body = body
         root = QVBoxLayout(body)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
@@ -181,24 +192,32 @@ class LayerToolboxDock(QDockWidget):
         self.setMinimumWidth(220)
         self.resize(240, self.height())
 
+    def apply_theme(self, ui_colors: dict[str, str]) -> None:
+        self._theme_colors.update(
+            {key: str(value) for key, value in ui_colors.items() if key in self._theme_colors}
+        )
+        if self._body is not None:
+            self._apply_theme(self._body)
+
     def _apply_theme(self, body: QWidget) -> None:
+        colors = self._theme_colors
         body.setStyleSheet(
             "\n".join(
                 [
-                    "QGroupBox { border: 1px solid #D9E3EF; border-radius: 8px; margin-top: 10px; padding: 8px; background: #FAFCFF; }",
-                    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #1E293B; font-weight: 600; }",
-                    "QComboBox, QDoubleSpinBox { min-height: 26px; border: 1px solid #C9D5E6; border-radius: 6px; padding: 2px 8px; background: #FFFFFF; color: #1E293B; }",
-                    "QComboBox:focus, QDoubleSpinBox:focus { border: 1px solid #3B82F6; }",
-                    "QComboBox QAbstractItemView { color: #1E293B; background: #FFFFFF; selection-background-color: #BFDBFE; }",
-                    "QPushButton { min-height: 28px; border: 1px solid #B6C5DA; border-radius: 6px; background: #FFFFFF; padding: 2px 10px; }",
-                    "QPushButton:hover { background: #EFF6FF; }",
-                    "QPushButton:pressed { background: #DBEAFE; }",
+                    f"QGroupBox {{ border: 1px solid {colors['border']}; border-radius: 4px; margin-top: 10px; padding: 8px; background: {colors['panel_background']}; }}",
+                    f"QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {colors['text']}; font-weight: 600; }}",
+                    f"QComboBox, QDoubleSpinBox {{ min-height: 26px; border: 1px solid {colors['border']}; border-radius: 4px; padding: 2px 8px; background: {colors['window_background']}; color: {colors['text']}; }}",
+                    f"QComboBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {colors['primary']}; }}",
+                    f"QComboBox QAbstractItemView {{ color: {colors['text']}; background: {colors['window_background']}; selection-background-color: {colors['hover_background']}; }}",
+                    f"QPushButton {{ min-height: 28px; border: 1px solid {colors['border']}; border-radius: 4px; background: {colors['window_background']}; padding: 2px 10px; }}",
+                    f"QPushButton:hover {{ background: {colors['hover_background']}; }}",
+                    f"QPushButton:pressed {{ background: {colors['primary']}; color: {colors['primary_text']}; }}",
                     "QLabel[sectionLabel='true'] { color: #475569; font-size: 11px; font-weight: 600; }",
                     "QFrame[frameShape='4'] { color: #D9E3EF; }",
-                    "QToolButton[basemapTile='true'] { border: 1px solid #C9D5E6; border-radius: 8px; background: #FFFFFF; padding: 4px; color: #0F172A; font-weight: 600; text-align: left; }",
-                    "QToolButton[basemapTile='true']:hover { background: #F8FBFF; border: 1px solid #60A5FA; }",
-                    "QToolButton[basemapTile='true']:checked { background: #E0F2FE; border: 2px solid #0284C7; }",
-                    "QLabel { color: #1E293B; }",
+                    f"QToolButton[basemapTile='true'] {{ border: 1px solid {colors['border']}; border-radius: 4px; background: {colors['panel_background']}; padding: 4px; color: {colors['text']}; font-weight: 600; text-align: left; }}",
+                    f"QToolButton[basemapTile='true']:hover {{ background: {colors['hover_background']}; border: 1px solid {colors['primary']}; }}",
+                    f"QToolButton[basemapTile='true']:checked {{ background: {colors['hover_background']}; border: 2px solid {colors['primary']}; }}",
+                    f"QLabel {{ color: {colors['text']}; }}",
                 ]
             )
         )

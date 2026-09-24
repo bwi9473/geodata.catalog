@@ -74,11 +74,11 @@ class IdentifyResultsPopup(QDialog):
         self.setStyleSheet(
             "\n".join(
                 [
-                    "QDialog { background: #FFFFFF; }",
-                    "QFrame[identifyBlock='true'] { border: 1px solid #C9D5E6; border-radius: 6px; background: #FAFCFF; }",
-                    "QLabel[identifyHeader='true'] { color: #0F172A; font-weight: 700; padding: 4px 2px; }",
-                    "QLabel[identifyField='true'] { color: #475569; }",
-                    "QLabel[identifyValue='true'] { color: #0F172A; }",
+                    "QDialog { background: #F0F0F0; }",
+                    "QFrame[identifyBlock='true'] { border: 1px solid #B8B8B8; border-radius: 4px; background: #E7E7E7; }",
+                    "QLabel[identifyHeader='true'] { color: #202020; font-weight: 700; padding: 4px 2px; }",
+                    "QLabel[identifyField='true'] { color: #4A4A4A; }",
+                    "QLabel[identifyValue='true'] { color: #202020; }",
                 ]
             )
         )

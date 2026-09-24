@@ -26,7 +26,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QIcon, QColor, QPalette
 
 
 USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
@@ -193,6 +193,11 @@ class CatalogDockWidget(QDockWidget):
         text = str(ui_colors.get("text", "#1E293B"))
         header_background = str(ui_colors.get("header_background", "#EEF3FA"))
         header_text = str(ui_colors.get("header_text", "#0F172A"))
+        hover_background = str(ui_colors.get("hover_background", "#F3F9F4"))
+        category_text = str(ui_colors.get("category_text", "#2E7D32"))
+        dataset_text = str(ui_colors.get("dataset_text", "#2B2B2B"))
+        selection_background = str(ui_colors.get("selection_background", "#CFE8D1"))
+        selection_text = str(ui_colors.get("selection_text", "#172A1B"))
         self.setStyleSheet(
             "\n".join(
                 [
@@ -200,23 +205,40 @@ class CatalogDockWidget(QDockWidget):
                     f"QWidget {{ background: {window_background}; color: {text}; }}",
                     f"QGroupBox {{ background: {panel_background}; color: {header_text}; border: 1px solid {border}; border-radius: 4px; margin-top: 12px; padding: 8px; font-weight: 700; }}",
                     "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }",
-                    f"QTreeWidget, QListWidget {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QTreeWidget, QListWidget {{ background: {panel_background}; color: {dataset_text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QTreeWidget::item {{ color: {dataset_text}; }}",
+                    f"QTreeWidget::item:has-children {{ color: {category_text}; }}",
                     f"QTreeWidget::item, QListWidget::item {{ min-height: 30px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
-                    f"QTreeWidget::item:selected, QListWidget::item:selected {{ background: {primary}; color: {primary_text}; }}",
+                    f"QTreeWidget::item:selected, QListWidget::item:selected {{ background: {selection_background}; color: {selection_text}; }}",
                     f"QFrame[groupingToolbox='true'] {{ background: {panel_background}; border: 1px solid {border}; border-radius: 3px; }}",
                     f"QFrame[groupingToolbox='true'] QLabel {{ color: {header_text}; font-weight: 600; }}",
-                    f"QFrame[groupingToolbox='true'] QComboBox {{ min-height: 24px; padding: 1px 22px 1px 6px; background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 3px; }}",
-                    f"QPushButton {{ background: #FFFFFF; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
-                    f"QPushButton:hover {{ border-color: {primary}; background: {header_background}; color: {header_text}; }}",
+                    f"QFrame[groupingToolbox='true'] QComboBox {{ min-height: 24px; padding: 1px 22px 1px 6px; background: {window_background}; color: {text}; border: 1px solid {border}; border-radius: 3px; }}",
+                    f"QPushButton {{ background: {window_background}; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
+                    f"QPushButton:hover {{ border-color: {primary}; background: {hover_background}; color: {header_text}; }}",
                     f"QPushButton:pressed {{ background: {primary}; color: {primary_text}; }}",
                     f"QPushButton:disabled {{ color: {border}; background: {panel_background}; }}",
                     f"QToolButton {{ color: {text}; border: 1px solid transparent; border-radius: 3px; padding: 2px; }}",
-                    f"QToolButton:hover {{ background: {header_background}; border-color: {border}; }}",
+                    f"QToolButton:hover {{ background: {hover_background}; border-color: {border}; }}",
                     f"QToolButton:pressed {{ background: {primary}; border-color: {primary}; }}",
                     f"QToolButton:checked {{ background: {primary}; color: {primary_text}; border-color: {primary}; }}",
                 ]
             )
         )
+        self._apply_selection_palette(self.datasource_tree, selection_background, selection_text)
+
+    @staticmethod
+    def _apply_selection_palette(widget, background: str, text: str) -> None:
+        palette = widget.palette()
+        color_role = getattr(QPalette, "ColorRole", None)
+        highlight_role = getattr(color_role, "Highlight", None) if color_role else getattr(QPalette, "Highlight")
+        highlighted_text_role = (
+            getattr(color_role, "HighlightedText", None)
+            if color_role
+            else getattr(QPalette, "HighlightedText")
+        )
+        palette.setColor(highlight_role, QColor(background))
+        palette.setColor(highlighted_text_role, QColor(text))
+        widget.setPalette(palette)
 
     def set_datasources(
         self,
