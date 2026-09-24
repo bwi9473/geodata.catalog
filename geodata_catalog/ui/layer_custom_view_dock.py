@@ -382,17 +382,16 @@ class LayerCustomViewWindow(QMainWindow):
         parent_cols_with_children: set[str] = set(self._filter_by_map.values())
 
         attr_group = QGroupBox("Attributes")
-        attr_form = QFormLayout(attr_group)
+        attr_form = QVBoxLayout(attr_group)
         attr_form.setContentsMargins(12, 16, 12, 12)
-        attr_form.setHorizontalSpacing(14)
-        attr_form.setVerticalSpacing(10)
+        attr_form.setSpacing(10)
 
         helper_label = QLabel(
             "Choose from the list or type multiple values separated by commas."
         )
         helper_label.setWordWrap(True)
         helper_label.setObjectName("FilterHintLabel")
-        attr_form.addRow(helper_label)
+        attr_form.addWidget(helper_label)
 
         checkbox_columns = []
         for col_def in self._searchable_columns:
@@ -405,8 +404,16 @@ class LayerCustomViewWindow(QMainWindow):
                 continue
             checkbox_columns.append(col_def)
         if checkbox_columns:
-            attr_form.addRow(self._build_checkbox_filter_grid(checkbox_columns))
+            attr_form.addWidget(self._build_checkbox_filter_grid(checkbox_columns))
 
+        field_grid = QGridLayout()
+        field_grid.setContentsMargins(0, 0, 0, 0)
+        field_grid.setHorizontalSpacing(14)
+        field_grid.setVerticalSpacing(10)
+        for column in range(4):
+            field_grid.setColumnStretch(column, 1)
+
+        field_index = 0
         for col_def in self._searchable_columns:
             col_name = col_def.get("name", "")
             label = col_def.get("label", col_name)
@@ -418,15 +425,16 @@ class LayerCustomViewWindow(QMainWindow):
 
             if input_type == "checkbox" and col_name not in self._checkbox_fallback_columns:
                 continue
-            elif use_distinct or input_type == "dropdown":
+            elif input_type == "dropdown":
                 self._lov_enabled_columns.add(col_name)
                 combo = QComboBox()
                 combo.setEditable(True)
                 _set_combo_box_no_insert(combo)
+                combo.setProperty("filterDropdown", True)
                 combo.setMaxVisibleItems(14)
-                combo.setMinimumContentsLength(24)
+                combo.setMinimumContentsLength(12)
                 combo.setObjectName("FilterInput")
-                distinct_vals = self._distinct_values.get(col_name, [])
+                distinct_vals = self._values_for_column(col_name)
                 for val in sorted(set(v for v in distinct_vals if v)):
                     combo.addItem(str(val), str(val))
                 combo_line_edit = combo.lineEdit()
@@ -487,22 +495,22 @@ class LayerCustomViewWindow(QMainWindow):
                     else None
                 )
 
-                lov_btn = QPushButton("LOV")
-                lov_btn.setObjectName("FilterLovButton")
-                lov_btn.setToolTip(f"Open value list for {label}")
-                lov_btn.setFixedWidth(44)
-                lov_btn.clicked.connect(
-                    lambda _checked=False, cn=col_name, cl=label: self._open_lov_selector(cn, cl)
-                )
-
                 row_widget = QWidget()
                 row_layout = QHBoxLayout(row_widget)
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setSpacing(6)
                 row_layout.addWidget(combo, 1)
-                row_layout.addWidget(lov_btn)
 
-                attr_form.addRow(label, row_widget)
+                field_cell = QWidget()
+                field_layout = QVBoxLayout(field_cell)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(4)
+                field_label = QLabel(str(label))
+                field_label.setObjectName("FilterFieldLabel")
+                field_layout.addWidget(field_label)
+                field_layout.addWidget(row_widget)
+                field_grid.addWidget(field_cell, field_index // 4, field_index % 4)
+                field_index += 1
                 self._attr_combos[col_name] = combo
             else:
                 edit = QLineEdit()
@@ -510,12 +518,37 @@ class LayerCustomViewWindow(QMainWindow):
                 edit.setClearButtonEnabled(True)
                 edit.setObjectName("FilterInput")
                 edit.returnPressed.connect(self._on_search_clicked)
-                attr_form.addRow(label, edit)
+                field_cell = QWidget()
+                field_layout = QVBoxLayout(field_cell)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(4)
+                label_row = QHBoxLayout()
+                label_row.setContentsMargins(0, 0, 0, 0)
+                label_row.setSpacing(6)
+                field_label = QLabel(str(label))
+                field_label.setObjectName("FilterFieldLabel")
+                label_row.addWidget(field_label)
+                if use_distinct:
+                    self._lov_enabled_columns.add(col_name)
+                    lov_btn = QPushButton("LOV")
+                    lov_btn.setObjectName("FilterLovButton")
+                    lov_btn.setToolTip(f"Open value list for {label}")
+                    lov_btn.setFixedWidth(44)
+                    lov_btn.clicked.connect(
+                        lambda _checked=False, cn=col_name, cl=label: self._open_lov_selector(cn, cl)
+                    )
+                    label_row.addWidget(lov_btn)
+                label_row.addStretch(1)
+                field_layout.addLayout(label_row)
+                field_layout.addWidget(edit)
+                field_grid.addWidget(field_cell, field_index // 4, field_index % 4)
+                field_index += 1
                 self._attr_edits[col_name] = edit
 
             self._attr_labels[col_name] = str(label)
             self._attr_types[col_name] = data_type
 
+        attr_form.addLayout(field_grid)
         return attr_group
 
     def _build_checkbox_filter_grid(self, checkbox_columns: list[dict[str, str | bool]]):
@@ -601,7 +634,20 @@ class LayerCustomViewWindow(QMainWindow):
         return True
 
     def _distinct_values_for_column(self, col_name: str) -> list[str]:
-        return sorted({str(value).strip() for value in self._distinct_values.get(col_name, []) if str(value).strip()})
+        return self._values_for_column(col_name)
+
+    def _values_for_column(self, col_name: str) -> list[str]:
+        values = self._distinct_values.get(col_name)
+        if values is None:
+            values = next(
+                (
+                    candidate
+                    for key, candidate in self._distinct_values.items()
+                    if str(key).casefold() == str(col_name).casefold()
+                ),
+                [],
+            )
+        return sorted({str(value).strip() for value in values if str(value).strip()})
 
     def _log_checkbox_fallback(self, label: str, invalid_values: list[str]) -> None:
         if self._logger is None or not hasattr(self._logger, "warning"):
@@ -808,8 +854,12 @@ class LayerCustomViewWindow(QMainWindow):
                     f"QLineEdit#FilterInput, QComboBox#FilterInput {{ background: {palette['window_background']}; border: 1px solid {palette['border']}; border-radius: 6px; padding: 6px 8px; min-height: 24px; }}",
                     f"QLineEdit#FilterInput:focus, QComboBox#FilterInput:focus {{ border: 1px solid {palette['primary']}; }}",
                     f"QComboBox#FilterInput::drop-down {{ border: 0; width: 26px; }}",
+                    f"QComboBox[filterDropdown='true'] {{ padding-right: 4px; }}",
+                    f"QComboBox[filterDropdown='true']::drop-down {{ width: 24px; border: 0; background: {palette['panel_background']}; }}",
+                    f"QComboBox[filterDropdown='true']::drop-down:hover {{ background: {palette['hover_background']}; }}",
                     f"QComboBox#FilterInput QAbstractItemView {{ border: 1px solid {palette['border']}; background: {palette['window_background']}; selection-background-color: {palette['header_background']}; selection-color: {palette['header_text']}; }}",
                     f"QLabel#FilterHintLabel {{ color: #475569; padding-bottom: 4px; }}",
+                    f"QLabel#FilterFieldLabel {{ color: {palette['dataset_text']}; font-weight: 600; }}",
                     f"QPushButton {{ border: 1px solid {palette['border']}; border-radius: 6px; padding: 6px 10px; }}",
                     f"QPushButton#FilterLovButton {{ background: {palette['window_background']}; color: {palette['text']}; font-size: 11px; padding: 4px 8px; }}",
                     f"QPushButton#FilterLovButton:hover {{ background: {palette['hover_background']}; border-color: {palette['primary']}; }}",
@@ -1244,10 +1294,17 @@ class LayerCustomViewWindow(QMainWindow):
             return
 
         combo = self._attr_combos.get(column_name)
-        if combo is None or QDialog is None or QListWidget is None:
+        edit = self._attr_edits.get(column_name)
+        if combo is None and edit is None:
+            return
+        if QDialog is None or QListWidget is None:
             return
 
-        candidates = self._combo_candidate_values(combo, column_name)
+        candidates = (
+            self._combo_candidate_values(combo, column_name)
+            if combo is not None
+            else self._candidate_values_for_column(column_name)
+        )
         if not candidates:
             QMessageBox.information(
                 self,
@@ -1256,7 +1313,8 @@ class LayerCustomViewWindow(QMainWindow):
             )
             return
 
-        current_selected = set(self._split_multi_value_text(combo.currentText()))
+        current_text = combo.currentText() if combo is not None else edit.text()
+        current_selected = set(self._split_multi_value_text(current_text))
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Select values - {label}")
@@ -1269,9 +1327,12 @@ class LayerCustomViewWindow(QMainWindow):
         parent_info.setObjectName("FilterHintLabel")
         if parent_col:
             parent_combo = self._attr_combos.get(parent_col)
+            parent_edit = self._attr_edits.get(parent_col)
             parent_value = ""
             if parent_combo is not None:
                 parent_value = self._resolve_single_parent_value(parent_col, parent_combo.currentText())
+            elif parent_edit is not None:
+                parent_value = self._resolve_single_parent_value(parent_col, parent_edit.text())
             parent_label = self._attr_labels.get(parent_col, parent_col)
             if parent_value:
                 parent_info.setText(f"Filtered by {parent_label}: {parent_value}")
@@ -1351,7 +1412,11 @@ class LayerCustomViewWindow(QMainWindow):
             for item in values_list.selectedItems()
             if item is not None and item.text().strip()
         ]
-        self._set_combo_filter_text(combo, ", ".join(selected_values))
+        selected_text = ", ".join(selected_values)
+        if combo is not None:
+            self._set_combo_filter_text(combo, selected_text)
+        elif edit is not None:
+            edit.setText(selected_text)
 
     def _append_trailing_separator(self, combo: Any) -> None:
         editor = combo.lineEdit() if hasattr(combo, "lineEdit") else None
@@ -1394,7 +1459,7 @@ class LayerCustomViewWindow(QMainWindow):
                     parent_combo.currentText(),
                 )
                 if selected_parent_val:
-                    per_parent = self._filtered_distinct_values.get(column_name, {})
+                    per_parent = self._filtered_values_for_column(column_name)
                     return [
                         str(value).strip()
                         for value in per_parent.get(selected_parent_val, [])
@@ -1403,16 +1468,29 @@ class LayerCustomViewWindow(QMainWindow):
 
         return [
             str(value).strip()
-            for value in self._distinct_values.get(column_name, [])
+            for value in self._values_for_column(column_name)
             if str(value).strip()
         ]
+
+    def _filtered_values_for_column(self, column_name: str) -> dict[str, list[str]]:
+        values = self._filtered_distinct_values.get(column_name)
+        if values is not None:
+            return values
+        return next(
+            (
+                candidate
+                for key, candidate in self._filtered_distinct_values.items()
+                if str(key).casefold() == str(column_name).casefold()
+            ),
+            {},
+        )
 
     def _resolve_single_parent_value(self, parent_col: str, raw_value: str) -> str:
         values = self._split_multi_value_text(raw_value)
         if len(values) != 1:
             return ""
         value = values[0]
-        distinct_values = {str(item) for item in self._distinct_values.get(parent_col, []) if item}
+        distinct_values = set(self._values_for_column(parent_col))
         return value if value in distinct_values else ""
 
     def _on_save_filters(self) -> None:

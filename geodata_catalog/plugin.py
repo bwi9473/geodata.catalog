@@ -1434,6 +1434,9 @@ class GeoDataCatalogPlugin:
         """Extract visible feature values for configured columns from a loaded QGIS layer."""
         col_names = [c.get("name", "") for c in columns if c.get("name", "")]
         layer_field_names = set(qgis_layer.fields().names()) if hasattr(qgis_layer, "fields") else set()
+        layer_fields_by_key = {
+            field_name.casefold(): field_name for field_name in layer_field_names
+        }
         records: list[dict[str, object]] = []
         try:
             for feat in qgis_layer.getFeatures():
@@ -1467,6 +1470,9 @@ class GeoDataCatalogPlugin:
             return {}, {}
 
         layer_field_names = set(qgis_layer.fields().names()) if hasattr(qgis_layer, "fields") else set()
+        layer_fields_by_key = {
+            field_name.casefold(): field_name for field_name in layer_field_names
+        }
 
         # Build filter_by relationships from config
         filter_by_map: dict[str, str] = {}  # child_col -> parent_col
@@ -1474,18 +1480,23 @@ class GeoDataCatalogPlugin:
             col_name = col_def.get("name", "")
             filter_by = col_def.get("filter_by", "")
             if col_name and filter_by:
-                filter_by_map[col_name] = str(filter_by)
+                actual_column = layer_fields_by_key.get(str(col_name).casefold(), str(col_name))
+                actual_parent = layer_fields_by_key.get(
+                    str(filter_by).casefold(),
+                    str(filter_by),
+                )
+                filter_by_map[actual_column] = actual_parent
 
         # Determine which columns need distinct value collection
         distinct_cols: set[str] = {
-            col_def.get("name", "")
+            layer_fields_by_key.get(str(col_def.get("name", "")).casefold(), "")
             for col_def in searchable_columns
             if col_def.get("name")
             and (
                 col_def.get("use_distinct")
                 or (str(col_def.get("input_type", "")).strip().lower() == "dropdown")
             )
-            and col_def.get("name") in layer_field_names
+            and str(col_def.get("name")).casefold() in layer_fields_by_key
         }
         distinct_cols.discard("")
 
