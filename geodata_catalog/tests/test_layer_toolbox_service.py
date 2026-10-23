@@ -284,6 +284,19 @@ def test_reset_saved_interactive_marker_clears_settings_when_present():
     assert settings.get_json("layer_toolbox/interactive_marker", None) is None
 
 
+def test_hide_interactive_marker_removes_layer_but_keeps_saved_position():
+    payload = {"x": 4.2, "y": 50.7, "crs": "EPSG:4326"}
+    settings = _FakeSettingsManager({"layer_toolbox/interactive_marker": payload})
+    marker = _FakeRasterLayer("", "Interactive marker", "memory")
+    project = _FakeProject(marker)
+    service = LayerToolboxService(logger=_FakeLogger(), project=project, settings_manager=settings)
+    marker.setCustomProperty(service.HELPER_KIND_PROPERTY, service.INTERACTIVE_MARKER_KIND)
+
+    assert service.hide_interactive_marker(iface=None) is True
+    assert marker.id() in project.remove_calls
+    assert settings.get_json("layer_toolbox/interactive_marker", None) == payload
+
+
 def test_extract_flight_level_ranges_collects_unique_sorted_ranges():
     features = [
         _FakeFeature({"fl_lower": 355, "fl_upper": 999}, fid=1),

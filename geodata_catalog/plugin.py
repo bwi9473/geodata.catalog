@@ -120,7 +120,9 @@ class GeoDataCatalogPlugin:
             on_save_layer_view_requested=self._on_save_layer_view_from_toolbar,
             on_copy_layer_filter_requested=self._on_copy_layer_filter_from_toolbar,
             on_place_marker_requested=self._on_place_marker_requested,
-            on_reset_marker_requested=self._on_reset_marker_requested,
+            on_hide_marker_requested=self._on_hide_marker_requested,
+            has_saved_marker=self._layer_toolbox_service.has_saved_interactive_marker,
+            on_marker_position_selected=self._on_marker_position_selected,
         )
 
     def initGui(self) -> None:
@@ -424,9 +426,16 @@ class GeoDataCatalogPlugin:
         self._logger.info(f"Geometry toolbar stored marker display result={result}.")
         return result
 
-    def _on_reset_marker_requested(self) -> None:
-        self._logger.info("Geometry toolbar requested interactive marker reset.")
-        self._layer_toolbox_service.reset_saved_interactive_marker(self.iface)
+    def _on_hide_marker_requested(self) -> None:
+        self._logger.info("Geometry toolbar requested interactive marker hide.")
+        self._layer_toolbox_service.hide_interactive_marker(self.iface)
+
+    def _on_marker_position_selected(self, point) -> bool:
+        return self._layer_toolbox_service.add_interactive_svg_marker(
+            point=point,
+            iface=self.iface,
+            svg_path=str(self._interactive_marker_svg_path()),
+        )
 
     @staticmethod
     def _interactive_marker_svg_path() -> Path:

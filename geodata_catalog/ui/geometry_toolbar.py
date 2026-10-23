@@ -13,19 +13,23 @@ try:
         QgsProject,
         QgsRectangle,
     )
-    from qgis.gui import QgsMapToolIdentify, QgsRubberBand
+    from qgis.gui import QgsMapToolEmitPoint, QgsMapToolIdentify, QgsRubberBand
     from qgis.PyQt.QtCore import QPoint, QSize, Qt
     from qgis.PyQt.QtGui import QColor, QCursor, QIcon
     from qgis.PyQt.QtWidgets import (
-        QAction,
         QDialog,
         QFrame,
         QGridLayout,
         QLabel,
+        QMenu,
         QScrollArea,
         QVBoxLayout,
         QWidget,
     )
+    try:
+        from qgis.PyQt.QtGui import QAction
+    except ImportError:
+        from qgis.PyQt.QtWidgets import QAction
 except ImportError:  # pragma: no cover
     QgsApplication = None
     QgsCoordinateTransform = None
@@ -34,6 +38,7 @@ except ImportError:  # pragma: no cover
     QgsProject = None
     QgsRectangle = None
     QgsMapToolIdentify = object
+    QgsMapToolEmitPoint = None
     QgsRubberBand = None
     QPoint = None
     QSize = None
@@ -46,6 +51,7 @@ except ImportError:  # pragma: no cover
     QFrame = None
     QGridLayout = None
     QLabel = None
+    QMenu = None
     QScrollArea = None
     QVBoxLayout = None
     QWidget = None
@@ -386,7 +392,9 @@ class GeometryToolbar:
         on_save_layer_view_requested: Callable[[], None] | None = None,
         on_copy_layer_filter_requested: Callable[[], None] | None = None,
         on_place_marker_requested: Callable[[], bool] | None = None,
-        on_reset_marker_requested: Callable[[], None] | None = None,
+        on_hide_marker_requested: Callable[[], None] | None = None,
+        has_saved_marker: Callable[[], bool] | None = None,
+        on_marker_position_selected: Callable[[object], bool] | None = None,
     ) -> None:
         self._iface = iface
         self._logger = logger
@@ -396,7 +404,9 @@ class GeometryToolbar:
         self._on_save_layer_view_requested = on_save_layer_view_requested
         self._on_copy_layer_filter_requested = on_copy_layer_filter_requested
         self._on_place_marker_requested = on_place_marker_requested
-        self._on_reset_marker_requested = on_reset_marker_requested
+        self._on_hide_marker_requested = on_hide_marker_requested
+        self._has_saved_marker = has_saved_marker
+        self._on_marker_position_selected = on_marker_position_selected
         self._toolbar = None
         self._identify_action: QAction | None = None
         self._configuration_action: QAction | None = None
@@ -407,6 +417,7 @@ class GeometryToolbar:
         self._place_marker_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
         self._marker_visible = False
+        self._marker_map_tool = None
         self._previous_map_tool = None
 
     def initGui(self) -> None:
@@ -497,15 +508,22 @@ class GeometryToolbar:
             self._iface.mainWindow(),
         )
         self._place_marker_action.setCheckable(True)
-        self._place_marker_action.setToolTip("Show or remove the configured interactive marker")
+        self._place_marker_action.setToolTip(
+            "Show or hide the interactive marker. If not configured, click the map to set its position. "
+            "Right-click this button to change its position."
+        )
         self._place_marker_action.toggled.connect(self._on_place_marker_toggled)
         self._toolbar.addAction(self._place_marker_action)
+        marker_button = self._toolbar.widgetForAction(self._place_marker_action)
+        marker_button.setContextMenuPolicy(_enum(Qt, "ContextMenuPolicy", "CustomContextMenu"))
+        marker_button.customContextMenuRequested.connect(self._show_marker_context_menu)
 
         canvas = self._map_canvas()
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
 
     def unload(self) -> None:
+        self._deactivate_marker_mode()
         canvas = self._map_canvas()
         if canvas is not None:
             try:
@@ -529,6 +547,7 @@ class GeometryToolbar:
         self._save_layer_view_action = None
         self._copy_layer_filter_action = None
         self._place_marker_action = None
+        self._marker_map_tool = None
         self._marker_visible = False
 
     def _identify_icon(self) -> QIcon:
@@ -626,10 +645,14 @@ class GeometryToolbar:
         self._logger.info(f"Marker toolbar toggled: enabled={enabled} visible={self._marker_visible}")
 
         if not enabled:
-            if self._marker_visible and self._on_reset_marker_requested is not None:
-                self._logger.info("Marker toolbar toggle-off requested marker reset.")
-                self._on_reset_marker_requested()
+            self._deactivate_marker_mode()
+            if self._marker_visible and self._on_hide_marker_requested is not None:
+                self._on_hide_marker_requested()
             self._marker_visible = False
+            return
+
+        if self._has_saved_marker is not None and not self._has_saved_marker():
+            self._activate_marker_mode()
             return
 
         self._logger.info("Marker toolbar toggle-on requested stored marker display.")
@@ -638,12 +661,63 @@ class GeometryToolbar:
             shown = bool(self._on_place_marker_requested())
         self._logger.info(f"Stored marker display callback finished: shown={shown}.")
         self._marker_visible = shown
-        if not shown and self._place_marker_action is not None and self._place_marker_action.isChecked():
-            self._place_marker_action.blockSignals(True)
-            self._place_marker_action.setChecked(False)
-            self._place_marker_action.blockSignals(False)
+        self._sync_marker_action()
+
+    def _sync_marker_action(self) -> None:
+        if self._place_marker_action is not None:
+            blocked = self._place_marker_action.blockSignals(True)
+            self._place_marker_action.setChecked(self._marker_visible)
+            self._place_marker_action.blockSignals(blocked)
+
+    def _show_marker_context_menu(self, position) -> None:
+        button = self._toolbar.widgetForAction(self._place_marker_action)
+        menu = QMenu(button)
+        configured = self._has_saved_marker is not None and self._has_saved_marker()
+        action = menu.addAction("Change marker position..." if configured else "Set marker position...")
+        action.triggered.connect(self._activate_marker_mode)
+        execute = getattr(menu, "exec", None) or menu.exec_
+        execute(button.mapToGlobal(position))
+
+    def _activate_marker_mode(self, _checked: bool = False) -> None:
+        canvas = self._map_canvas()
+        if canvas is None or QgsMapToolEmitPoint is None or self._on_marker_position_selected is None:
+            self._logger.warning("Cannot set marker position: map tool or position callback unavailable.")
+            self._sync_marker_action()
+            return
+        if self._marker_map_tool is None:
+            self._marker_map_tool = QgsMapToolEmitPoint(canvas)
+            self._marker_map_tool.canvasClicked.connect(self._on_canvas_marker_clicked)
+        if canvas.mapTool() != self._marker_map_tool:
+            self._previous_map_tool = canvas.mapTool()
+            canvas.setMapTool(self._marker_map_tool)
+
+    def _deactivate_marker_mode(self) -> None:
+        canvas = self._map_canvas()
+        if canvas is not None and self._marker_map_tool is not None and canvas.mapTool() == self._marker_map_tool:
+            previous = self._previous_map_tool
+            self._previous_map_tool = None
+            if previous is not None:
+                canvas.setMapTool(previous)
+            else:
+                canvas.unsetMapTool(self._marker_map_tool)
+
+    def _on_canvas_marker_clicked(self, point, button) -> None:
+        if button == _enum(Qt, "MouseButton", "RightButton"):
+            self._deactivate_marker_mode()
+            self._sync_marker_action()
+            return
+        if button != _enum(Qt, "MouseButton", "LeftButton"):
+            return
+        if self._on_marker_position_selected is None or not self._on_marker_position_selected(point):
+            self._logger.warning("Could not save the interactive marker position; placement remains active.")
+            return
+        self._marker_visible = True
+        self._deactivate_marker_mode()
+        self._sync_marker_action()
 
     def _on_map_tool_set(self, new_tool, _old_tool=None) -> None:
+        if self._marker_map_tool is not None and new_tool != self._marker_map_tool:
+            self._sync_marker_action()
         if self._identify_action is not None:
             is_active = self._identify_tool is not None and new_tool == self._identify_tool
             if self._identify_action.isChecked() != is_active:

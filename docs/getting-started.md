@@ -71,6 +71,15 @@ pip install requests>=2.32.0
 
 ---
 
+## Interactive marker
+
+Use **Interactive Marker** on the GeoData Geometry Toolbox toolbar:
+
+- If no position is configured, click the button, then left-click the map to set and save the marker position.
+- If a position is configured, click the button to show the saved marker. Click again to hide it without deleting its saved position.
+- Right-click the toolbar button and choose **Change marker position...** to select and save a new position on the map.
+- Right-click the map while selecting a position to cancel. The previous saved position is kept.
+
 ## Your First Layer — KML file
 
 The plugin ships with a sample KML file located at:

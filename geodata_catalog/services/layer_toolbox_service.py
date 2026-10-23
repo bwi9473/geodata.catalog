@@ -767,14 +767,18 @@ class LayerToolboxService:
             return False
         return self.add_interactive_svg_marker(point=point, iface=iface, svg_path=svg_path)
 
-    def reset_saved_interactive_marker(self, iface) -> bool:
-        self._logger.info("Interactive marker reset requested.")
+    def hide_interactive_marker(self, iface) -> bool:
+        self._logger.info("Interactive marker hide requested.")
         cleared = self._remove_interactive_marker_layer()
-        removed_setting = self._clear_saved_interactive_marker_data()
-
         canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
         if canvas is not None and hasattr(canvas, "refresh"):
             canvas.refresh()
+        return cleared
+
+    def reset_saved_interactive_marker(self, iface) -> bool:
+        self._logger.info("Interactive marker reset requested.")
+        cleared = self.hide_interactive_marker(iface)
+        removed_setting = self._clear_saved_interactive_marker_data()
         if cleared or removed_setting:
             self._logger.info("Interactive marker has been reset.")
             return True
