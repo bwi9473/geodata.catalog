@@ -30,6 +30,11 @@ class OracleConnector(BaseConnector):
 
     def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         rows = self._discover_spatial_objects()
+        return self._layer_definitions(rows, include_stats)
+
+    def _layer_definitions(
+        self, rows: list[tuple[Any, ...]], include_stats: bool
+    ) -> list[LayerDefinition]:
         layers: list[LayerDefinition] = []
         for row in rows:
             owner = row[0]
@@ -77,10 +82,11 @@ class OracleConnector(BaseConnector):
         return layers
 
     def get_layer_metadata(self, layer_name: str) -> LayerDefinition:
-        for layer in self.get_layers():
-            if layer.layer_name == layer_name:
-                return layer
-        raise LayerLoadException(f"Oracle layer '{layer_name}' not found.")
+        """Look up only the selected layer, without scanning data for statistics."""
+        rows = self._discover_spatial_objects(layer_name)
+        if not rows:
+            raise LayerLoadException(f"Oracle layer '{layer_name}' not found.")
+        return self._layer_definitions(rows[:1], include_stats=False)[0]
 
     def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
@@ -90,6 +96,9 @@ class OracleConnector(BaseConnector):
         if configured_key and not self._is_safe_identifier(configured_key):
             raise LayerLoadException(f"Invalid Oracle key column '{configured_key}'.")
         self._raise_if_empty_layer(metadata)
+        if not self._has_features(metadata.owner or "", metadata.object_name or ""):
+            metadata.feature_count = 0
+            self._raise_if_empty_layer(metadata)
         uri = self._build_layer_uri(
             metadata.owner or "",
             metadata.object_name or "",
@@ -103,16 +112,7 @@ class OracleConnector(BaseConnector):
 
     def get_layer_fields(self, layer_name: str) -> list[dict[str, str | int]]:
         """Return table or view attributes without requiring a QGIS provider key."""
-        metadata = next(
-            (
-                layer
-                for layer in self.get_layers(include_stats=False)
-                if layer.layer_name == layer_name
-            ),
-            None,
-        )
-        if metadata is None:
-            raise LayerLoadException(f"Oracle layer '{layer_name}' not found.")
+        metadata = self.get_layer_metadata(layer_name)
         owner = metadata.owner or ""
         object_name = metadata.object_name or ""
         if not self._is_safe_identifier(owner) or not self._is_safe_identifier(object_name):
@@ -153,8 +153,16 @@ class OracleConnector(BaseConnector):
             else "varchar"
         )
 
-    def _discover_spatial_objects(self) -> list[tuple[Any, ...]]:
+    def _discover_spatial_objects(
+        self, layer_name: str | None = None
+    ) -> list[tuple[Any, ...]]:
         owner_filter = self._config.get("schema")
+        params = {"owner_filter": owner_filter.upper() if owner_filter else None}
+        if layer_name is not None:
+            parts = layer_name.split(".")
+            if len(parts) != 2 or not all(self._is_safe_identifier(part) for part in parts):
+                raise LayerLoadException(f"Invalid Oracle layer name '{layer_name}'.")
+            params["layer_owner"], params["layer_object"] = parts
         query = """
             WITH object_candidates AS (
                 SELECT
@@ -190,12 +198,26 @@ class OracleConnector(BaseConnector):
                AND c.column_name = m.column_name
                AND c.data_type = 'SDO_GEOMETRY'
             WHERE (:owner_filter IS NULL OR m.owner = :owner_filter)
-            ORDER BY m.owner, m.table_name
         """
+        if layer_name is not None:
+            query += """
+                AND m.owner = :layer_owner
+                AND m.table_name = :layer_object
+            """
+        query += " ORDER BY m.owner, m.table_name"
         with self._connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(query, {"owner_filter": owner_filter.upper() if owner_filter else None})
+                cursor.execute(query, params)
                 return cursor.fetchall()
+
+    def _has_features(self, owner: str, object_name: str) -> bool:
+        if not self._is_safe_identifier(owner) or not self._is_safe_identifier(object_name):
+            raise LayerLoadException(f"Invalid Oracle layer name '{owner}.{object_name}'.")
+        sql = f'SELECT 1 FROM "{owner}"."{object_name}" WHERE ROWNUM = 1'
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+                return cursor.fetchone() is not None
 
     def _detect_geometry_type(self, owner: str, object_name: str, geometry_column: str) -> str | None:
         sql = (

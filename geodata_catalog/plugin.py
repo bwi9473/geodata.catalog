@@ -1704,10 +1704,9 @@ class GeoDataCatalogPlugin:
         layer = by_source.get(layer_name)
         if layer is None:
             datasource = self._datasource_service.get_datasource(datasource_id)
-            layers = self._layer_service.discover_layers(datasource)
-            by_source = {item.layer_name: item for item in layers}
+            layer = self._layer_service.get_layer(datasource, layer_name)
+            by_source[layer_name] = layer
             self._layer_cache[datasource_id] = by_source
-            layer = by_source.get(layer_name)
         if layer is None:
             raise GeoDataCatalogException(f"Layer '{layer_name}' not found in current catalog.")
         return layer

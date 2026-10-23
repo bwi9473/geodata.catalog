@@ -28,14 +28,29 @@ class LayerService:
     ) -> list[LayerDefinition]:
         connector = self._datasource_service.get_connector(datasource)
         discovered = connector.get_layers(include_stats=include_stats)
+        merged = self._merge_configuration(datasource.id, discovered)
+        self._logger.info(
+            f"Discovered {len(merged)} layers for datasource '{datasource.name}'."
+        )
+        return merged
+
+    def get_layer(self, datasource: Datasource, layer_name: str) -> LayerDefinition:
+        """Resolve one layer and apply the same configuration as catalog discovery."""
+        connector = self._datasource_service.get_connector(datasource)
+        layer = connector.get_layer_metadata(layer_name)
+        return self._merge_configuration(datasource.id, [layer])[0]
+
+    def _merge_configuration(
+        self, datasource_id: str, discovered: list[LayerDefinition]
+    ) -> list[LayerDefinition]:
         configured = {
             layer.layer_name: layer
-            for layer in self._layer_repository.list_by_datasource(datasource.id)
+            for layer in self._layer_repository.list_by_datasource(datasource_id)
         }
         layer_configs = (
             {
                 cfg.layer_name: cfg
-                for cfg in self._layer_config_repository.list_by_datasource(datasource.id)
+                for cfg in self._layer_config_repository.list_by_datasource(datasource_id)
             }
             if self._layer_config_repository is not None
             else {}
@@ -74,9 +89,6 @@ class LayerService:
 
             merged.append(layer)
 
-        self._logger.info(
-            f"Discovered {len(merged)} layers for datasource '{datasource.name}'."
-        )
         return merged
 
     def save_layer_configuration(self, layer: LayerDefinition) -> None:
