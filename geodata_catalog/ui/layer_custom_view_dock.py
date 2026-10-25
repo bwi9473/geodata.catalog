@@ -38,7 +38,9 @@ try:
         QMessageBox,
         QPushButton,
         QScrollArea,
+        QSizePolicy,
         QSpinBox,
+        QSplitter,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
@@ -70,11 +72,19 @@ except ImportError:  # pragma: no cover
     QMessageBox = None
     QPushButton = None
     QScrollArea = None
+    QSizePolicy = None
     QSpinBox = None
+    QSplitter = None
     QTableWidget = None
     QTableWidgetItem = None
     QVBoxLayout = None
     QWidget = None
+
+
+def _qt_enum_value(owner: Any, enum_name: str, member: str):
+    enum_class = getattr(owner, enum_name, None)
+    value = getattr(enum_class, member, None)
+    return value if value is not None else getattr(owner, member)
 
 
 def _get_item_flags():
@@ -101,7 +111,7 @@ def _get_item_flags():
         else:
             check_state_checked = 2
             check_state_unchecked = 0
-        user_role = getattr(Qt, "UserRole", 32)
+        user_role = Qt.ItemDataRole.UserRole
     return {
         "enabled": item_enabled_val,
         "checkable": item_checkable,
@@ -219,6 +229,10 @@ class LayerCustomViewWindow(QMainWindow):
         self._current_records: list[dict[str, object]] = []
         self._current_fids: list[int] = []
         self._checked_fids: set[int] = set()
+        self._syncing_selection = False
+        self._record_order_cache: tuple[
+            tuple[object, ...], list[dict[str, object]], set[int]
+        ] | None = None
         self._current_page = 1
         self._updating_table = False
         self._on_filter_applied = on_filter_applied
@@ -254,19 +268,43 @@ class LayerCustomViewWindow(QMainWindow):
         self._checkbox_fallback_columns: set[str] = set()
         self._filter_by_map: dict[str, str] = {}
         self._attr_scroll_area = None
+        self._attribute_fields: list[tuple[str, Any]] = []
+        self._checkbox_fields: list[tuple[str, Any]] = []
+        self._attribute_grid = None
+        self._checkbox_grid = None
+        self._attribute_layout_key = None
+        self._field_search_edit = None
+        self._filled_fields_check = None
 
         body = QWidget(self)
         self.setCentralWidget(body)
         self._root = QVBoxLayout(body)
+        self._splitter = QSplitter(_qt_enum_value(Qt, "Orientation", "Vertical"))
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(8)
+        self._root.addWidget(self._splitter)
 
         self._build_filter_panel(initial_filter)
+        results = QWidget()
+        results.setMinimumHeight(220)
+        self._results_layout = QVBoxLayout(results)
+        self._results_layout.setContentsMargins(0, 0, 0, 0)
+        self._splitter.addWidget(results)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.handle(1).setToolTip("Drag to resize filters and results")
         self._build_controls()
         self._build_quick_search_row()
         self._build_table()
         self._apply_theme()
+        if self._layer is not None:
+            self._checked_fids = set(self._layer.selectedFeatureIds())
+            self._layer.selectionChanged.connect(self._on_layer_selection_changed)
         self._apply_view_state()
 
         self.resize(1024, 800)
+        filter_height = min(380, self._filter_panel.sizeHint().height())
+        self._splitter.setSizes([filter_height, max(240, self.height() - filter_height - 32)])
 
     @staticmethod
     def _normalize_ui_colors(ui_colors: dict[str, str] | None) -> dict[str, str]:
@@ -344,9 +382,34 @@ class LayerCustomViewWindow(QMainWindow):
         if self._flight_group is not None:
             panel_layout.addWidget(self._flight_group)
         if self._attr_group is not None:
+            self._field_browser = QWidget()
+            browser_layout = QVBoxLayout(self._field_browser)
+            browser_layout.setContentsMargins(0, 0, 0, 0)
+            browser_row = QHBoxLayout()
+            self._field_search_edit = QLineEdit()
+            self._field_search_edit.setObjectName("FilterInput")
+            self._field_search_edit.setPlaceholderText("Find filter field by name or label...")
+            self._field_search_edit.setClearButtonEnabled(True)
+            self._field_search_edit.setToolTip(
+                "Find filter fields without changing their values or the layer results"
+            )
+            self._filled_fields_check = QCheckBox("Only filled fields")
+            self._filled_fields_check.setToolTip(
+                "Show fields with a filter value. Hidden fields still participate in Search."
+            )
+            browser_row.addWidget(self._field_search_edit, 1)
+            browser_row.addWidget(self._filled_fields_check)
+            browser_layout.addLayout(browser_row)
+            self._field_count_label = QLabel()
+            self._field_count_label.setObjectName("FilterHintLabel")
+            self._field_count_label.setWordWrap(True)
+            browser_layout.addWidget(self._field_count_label)
+            panel_layout.addWidget(self._field_browser)
+            self._field_search_edit.textChanged.connect(self._refresh_attribute_fields)
+            self._filled_fields_check.toggled.connect(self._refresh_attribute_fields)
             self._attr_scroll_area = QScrollArea()
             self._attr_scroll_area.setWidgetResizable(True)
-            self._attr_scroll_area.setMaximumHeight(300)
+            self._attr_scroll_area.setMinimumHeight(100)
             if QFrame is not None:
                 no_frame = getattr(QFrame, "NoFrame", None)
                 if no_frame is None and hasattr(QFrame, "Shape"):
@@ -354,7 +417,8 @@ class LayerCustomViewWindow(QMainWindow):
                 if no_frame is not None:
                     self._attr_scroll_area.setFrameShape(no_frame)
             self._attr_scroll_area.setWidget(self._attr_group)
-            panel_layout.addWidget(self._attr_scroll_area)
+            self._attr_scroll_area.viewport().installEventFilter(self)
+            panel_layout.addWidget(self._attr_scroll_area, 1)
 
         search_row = QHBoxLayout()
         search_row.addStretch(1)
@@ -364,10 +428,11 @@ class LayerCustomViewWindow(QMainWindow):
         search_row.addWidget(self._search_btn)
         panel_layout.addLayout(search_row)
 
-        self._root.addWidget(panel)
+        self._splitter.addWidget(panel)
 
         self._init_filter_state(initial_filter)
         self._refresh_filter_toggle_buttons()
+        self._refresh_attribute_fields()
 
     def _build_attribute_group(self):
         if not self._searchable_columns:
@@ -410,10 +475,8 @@ class LayerCustomViewWindow(QMainWindow):
         field_grid.setContentsMargins(0, 0, 0, 0)
         field_grid.setHorizontalSpacing(14)
         field_grid.setVerticalSpacing(10)
-        for column in range(4):
-            field_grid.setColumnStretch(column, 1)
+        self._attribute_grid = field_grid
 
-        field_index = 0
         for col_def in self._searchable_columns:
             col_name = col_def.get("name", "")
             label = col_def.get("label", col_name)
@@ -433,6 +496,9 @@ class LayerCustomViewWindow(QMainWindow):
                 combo.setProperty("filterDropdown", True)
                 combo.setMaxVisibleItems(14)
                 combo.setMinimumContentsLength(12)
+                combo.setSizeAdjustPolicy(
+                    _qt_enum_value(QComboBox, "SizeAdjustPolicy", "AdjustToMinimumContentsLengthWithIcon")
+                )
                 combo.setObjectName("FilterInput")
                 distinct_vals = self._values_for_column(col_name)
                 for val in sorted(set(v for v in distinct_vals if v)):
@@ -442,7 +508,7 @@ class LayerCustomViewWindow(QMainWindow):
                     combo_line_edit.setObjectName("FilterInput")
                     combo_line_edit.setClearButtonEnabled(True)
                     combo_line_edit.setPlaceholderText(
-                        f"Choose or type {label.lower()} (comma-separated)"
+                        "Choose or type values"
                     )
                     combo_line_edit.textEdited.connect(
                         lambda text, current_combo=combo: self._on_combo_text_edited(
@@ -501,24 +567,25 @@ class LayerCustomViewWindow(QMainWindow):
                 row_layout.setSpacing(6)
                 row_layout.addWidget(combo, 1)
 
-                field_cell = QWidget()
+                field_cell = QWidget(attr_group)
                 field_layout = QVBoxLayout(field_cell)
                 field_layout.setContentsMargins(0, 0, 0, 0)
                 field_layout.setSpacing(4)
                 field_label = QLabel(str(label))
                 field_label.setObjectName("FilterFieldLabel")
+                field_label.setWordWrap(True)
+                field_label.setBuddy(combo)
                 field_layout.addWidget(field_label)
                 field_layout.addWidget(row_widget)
-                field_grid.addWidget(field_cell, field_index // 4, field_index % 4)
-                field_index += 1
                 self._attr_combos[col_name] = combo
+                combo.currentTextChanged.connect(self._on_attribute_filter_edited)
             else:
                 edit = QLineEdit()
-                edit.setPlaceholderText(f"Filter by {label} (comma-separated)")
+                edit.setPlaceholderText("Type values, separated by commas")
                 edit.setClearButtonEnabled(True)
                 edit.setObjectName("FilterInput")
                 edit.returnPressed.connect(self._on_search_clicked)
-                field_cell = QWidget()
+                field_cell = QWidget(attr_group)
                 field_layout = QVBoxLayout(field_cell)
                 field_layout.setContentsMargins(0, 0, 0, 0)
                 field_layout.setSpacing(4)
@@ -527,6 +594,8 @@ class LayerCustomViewWindow(QMainWindow):
                 label_row.setSpacing(6)
                 field_label = QLabel(str(label))
                 field_label.setObjectName("FilterFieldLabel")
+                field_label.setWordWrap(True)
+                field_label.setBuddy(edit)
                 label_row.addWidget(field_label)
                 if use_distinct:
                     self._lov_enabled_columns.add(col_name)
@@ -541,14 +610,23 @@ class LayerCustomViewWindow(QMainWindow):
                 label_row.addStretch(1)
                 field_layout.addLayout(label_row)
                 field_layout.addWidget(edit)
-                field_grid.addWidget(field_cell, field_index // 4, field_index % 4)
-                field_index += 1
                 self._attr_edits[col_name] = edit
+                edit.textChanged.connect(self._on_attribute_filter_edited)
 
+            field_cell.setSizePolicy(
+                _qt_enum_value(QSizePolicy, "Policy", "Ignored"),
+                _qt_enum_value(QSizePolicy, "Policy", "Preferred"),
+            )
+            field_cell.setToolTip(f"{label} ({col_name})\nEnter multiple values separated by commas.")
+            self._attribute_fields.append((col_name, field_cell))
             self._attr_labels[col_name] = str(label)
             self._attr_types[col_name] = data_type
 
         attr_form.addLayout(field_grid)
+        self._no_fields_label = QLabel("No matching filter fields. Clear the field search or turn off Only filled fields.")
+        self._no_fields_label.setWordWrap(True)
+        attr_form.addWidget(self._no_fields_label)
+        attr_form.addStretch(1)
         return attr_group
 
     def _build_checkbox_filter_grid(self, checkbox_columns: list[dict[str, str | bool]]):
@@ -557,8 +635,8 @@ class LayerCustomViewWindow(QMainWindow):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
+        self._checkbox_grid = grid
 
-        cells = []
         for col_def in checkbox_columns:
             col_name = str(col_def.get("name", "")).strip()
             if not col_name:
@@ -580,42 +658,89 @@ class LayerCustomViewWindow(QMainWindow):
                 )
             )
 
-            cell = QWidget()
+            cell = QWidget(container)
+            cell.setSizePolicy(
+                _qt_enum_value(QSizePolicy, "Policy", "Ignored"),
+                _qt_enum_value(QSizePolicy, "Policy", "Preferred"),
+            )
             cell_layout = QVBoxLayout(cell)
             cell_layout.setContentsMargins(0, 0, 0, 0)
             cell_layout.setSpacing(4)
-            cell_layout.addWidget(QLabel(label))
+            field_label = QLabel(label)
+            field_label.setWordWrap(True)
+            field_label.setBuddy(checkbox)
+            cell_layout.addWidget(field_label)
             cell_layout.addWidget(checkbox)
-            cell.setMaximumWidth(self._checkbox_cell_width(cell, checkbox))
-            cells.append(cell)
+            cell.setToolTip(f"{label} ({col_name})")
+            self._checkbox_fields.append((col_name, cell))
             self._attr_checks[col_name] = checkbox
             self._attr_types[col_name] = data_type
+            self._attr_labels[col_name] = label
+            checkbox.stateChanged.connect(self._on_attribute_filter_edited)
 
-        columns = self._checkbox_grid_column_count(cells)
-        for index, cell in enumerate(cells):
-            grid.addWidget(cell, index // columns, index % columns)
         return container
 
-    def _checkbox_grid_column_count(self, cells: list[Any]) -> int:
-        if not cells:
-            return 1
-        widget_width = self.width() if hasattr(self, "width") else 0
-        available_width = max(360, widget_width - 120)
-        screen = self.screen() if hasattr(self, "screen") else None
-        if screen is not None and hasattr(screen, "availableGeometry"):
-            screen_width = int(screen.availableGeometry().width() * 0.65)
-            available_width = min(screen_width, available_width) if widget_width > 480 else screen_width
-        cell_width = max(56, max(cell.sizeHint().width() for cell in cells) + 10)
-        return max(1, min(len(cells), available_width // cell_width))
+    @staticmethod
+    def _filter_grid_column_count(available_width: int, field_count: int) -> int:
+        return max(1, min(4, field_count, (available_width + 14) // (260 + 14)))
 
-    def _checkbox_cell_width(self, cell: Any, checkbox: Any) -> int:
-        original_text = checkbox.text()
-        checked_label = str(getattr(checkbox, "_checked_label", "Y"))
-        unchecked_label = str(getattr(checkbox, "_unchecked_label", "N"))
-        checkbox.setText(checked_label if len(checked_label) >= len(unchecked_label) else unchecked_label)
-        width = cell.sizeHint().width()
-        checkbox.setText(original_text)
-        return width
+    def _attribute_filter_value(self, column_name: str) -> str:
+        if column_name in self._attr_edits:
+            return self._attr_edits[column_name].text().strip()
+        if column_name in self._attr_combos:
+            return self._normalized_filter_text(self._attr_combos[column_name].currentText())
+        return self._checkbox_filter_value(column_name, self._attr_checks[column_name])
+
+    def _on_attribute_filter_edited(self, *_args) -> None:
+        self._refresh_filter_toggle_buttons()
+        self._refresh_attribute_fields()
+
+    def _refresh_attribute_fields(self, *_args) -> None:
+        if self._attr_scroll_area is None:
+            return
+        query = self._field_search_edit.text().strip().casefold()
+        only_filled = self._filled_fields_check.isChecked()
+        fields = self._checkbox_fields + self._attribute_fields
+        visible_names = []
+        filled_count = 0
+        hidden_filled_count = 0
+        for name, cell in fields:
+            filled = bool(self._attribute_filter_value(name))
+            matches = query in name.casefold() or query in self._attr_labels[name].casefold()
+            visible = matches and (filled or not only_filled)
+            cell.setVisible(visible)
+            filled_count += int(filled)
+            hidden_filled_count += int(filled and not visible)
+            if visible:
+                visible_names.append(name)
+        summary = f"{len(visible_names)} of {len(fields)} fields | {filled_count} filled"
+        if hidden_filled_count:
+            summary += f" | {hidden_filled_count} filled fields hidden (included in Search)"
+        self._field_count_label.setText(summary)
+        self._no_fields_label.setVisible(not visible_names)
+
+        available_width = max(0, self._attr_scroll_area.viewport().width() - 64)
+        columns = self._filter_grid_column_count(available_width, len(visible_names))
+        layout_key = (columns, tuple(visible_names))
+        if layout_key == self._attribute_layout_key:
+            return
+        self._attribute_layout_key = layout_key
+        visible_set = set(visible_names)
+        for grid, grid_fields in (
+            (self._checkbox_grid, self._checkbox_fields),
+            (self._attribute_grid, self._attribute_fields),
+        ):
+            if grid is None:
+                continue
+            while grid.count():
+                grid.takeAt(0)
+            for column in range(4):
+                grid.setColumnStretch(column, 1 if column < columns else 0)
+            index = 0
+            for name, cell in grid_fields:
+                if name in visible_set:
+                    grid.addWidget(cell, index // columns, index % columns)
+                    index += 1
 
     def _prepare_distinct_checkbox_column(self, col_def: dict[str, str | bool]) -> bool:
         col_name = str(col_def.get("name", "")).strip()
@@ -710,6 +835,10 @@ class LayerCustomViewWindow(QMainWindow):
         controls.addWidget(QLabel("Sort by"))
 
         self._sort_column_combo = QComboBox()
+        self._sort_column_combo.setMinimumContentsLength(12)
+        self._sort_column_combo.setSizeAdjustPolicy(
+            _qt_enum_value(QComboBox, "SizeAdjustPolicy", "AdjustToMinimumContentsLengthWithIcon")
+        )
         for col in self._columns:
             self._sort_column_combo.addItem(col.get("label", col["name"]), col["name"])
 
@@ -738,12 +867,16 @@ class LayerCustomViewWindow(QMainWindow):
 
         controls.addWidget(self._sort_column_combo)
         controls.addWidget(self._sort_order_combo)
-        controls.addWidget(self._page_size_spin)
         controls.addWidget(apply_btn)
         controls.addStretch(1)
-        controls.addWidget(self._export_format_combo)
-        controls.addWidget(export_btn)
-        self._root.addLayout(controls)
+        self._results_layout.addLayout(controls)
+
+        export_row = QHBoxLayout()
+        export_row.addWidget(self._page_size_spin)
+        export_row.addStretch(1)
+        export_row.addWidget(self._export_format_combo)
+        export_row.addWidget(export_btn)
+        self._results_layout.addLayout(export_row)
 
         nav = QHBoxLayout()
         self._prev_btn = QPushButton("Previous")
@@ -751,16 +884,27 @@ class LayerCustomViewWindow(QMainWindow):
         self._prev_btn.clicked.connect(self._on_prev_page)
         self._next_btn.clicked.connect(self._on_next_page)
         self._summary_label = QLabel("")
+        self._summary_label.setWordWrap(True)
         nav.addWidget(self._prev_btn)
         nav.addWidget(self._next_btn)
         nav.addWidget(self._summary_label, stretch=1)
-        self._root.addLayout(nav)
+        self._selection_label = QLabel("")
+        self._clear_selection_btn = QPushButton("Clear selection")
+        self._clear_selection_btn.setToolTip("Uncheck all records and clear this layer's map selection")
+        self._clear_selection_btn.clicked.connect(self._clear_map_selection)
+        nav.addWidget(self._selection_label)
+        nav.addWidget(self._clear_selection_btn)
+        self._results_layout.addLayout(nav)
 
     def _build_quick_search_row(self) -> None:
         row = QHBoxLayout()
         row.addWidget(QLabel("Search in results"))
 
         self._quick_search_column_combo = QComboBox()
+        self._quick_search_column_combo.setMinimumContentsLength(12)
+        self._quick_search_column_combo.setSizeAdjustPolicy(
+            _qt_enum_value(QComboBox, "SizeAdjustPolicy", "AdjustToMinimumContentsLengthWithIcon")
+        )
         self._quick_search_column_combo.addItem("All columns", None)
         for col in self._columns:
             self._quick_search_column_combo.addItem(col.get("label", col["name"]), col["name"])
@@ -779,7 +923,7 @@ class LayerCustomViewWindow(QMainWindow):
         row.addWidget(self._quick_search_edit, stretch=1)
         row.addWidget(quick_search_btn)
         row.addWidget(self._quick_search_clear_btn)
-        self._root.addLayout(row)
+        self._results_layout.addLayout(row)
 
     def _on_quick_search_clicked(self) -> None:
         self._quick_search_active_text = self._quick_search_edit.text().strip()
@@ -833,7 +977,7 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._table.setColumnWidth(0, 28)
         self._table.horizontalHeader().setStretchLastSection(False)
-        self._root.addWidget(self._table)
+        self._results_layout.addWidget(self._table, 1)
 
     def _apply_theme(self) -> None:
         palette = self._ui_colors
@@ -865,7 +1009,10 @@ class LayerCustomViewWindow(QMainWindow):
                     f"QPushButton#FilterLovButton:hover {{ background: {palette['hover_background']}; border-color: {palette['primary']}; }}",
                     f"QPushButton#FilterToggleButton {{ background: {palette['window_background']}; color: {palette['text']}; font-weight: 600; border: 1px solid {palette['border']}; }}",
                     f"QPushButton#FilterToggleButton:checked {{ background: {palette['primary']}; color: {palette['primary_text']}; border-color: {palette['primary']}; }}",
+                    f"QPushButton#FilterToggleButton:disabled {{ background: {palette['panel_background']}; color: #6B7280; border-color: {palette['border']}; }}",
                     f"QPushButton#PrimaryButton {{ background: {palette['primary']}; color: {palette['primary_text']}; border-color: {palette['primary']}; font-weight: 600; }}",
+                    f"QSplitter::handle:vertical {{ background: {palette['border']}; margin: 2px 0; border-radius: 2px; }}",
+                    f"QSplitter::handle:vertical:hover {{ background: {palette['primary']}; }}",
                 ]
             )
         )
@@ -879,6 +1026,7 @@ class LayerCustomViewWindow(QMainWindow):
             self._flight_group.setVisible(self._toggle_fl_btn.isChecked())
         if self._attr_scroll_area is not None:
             self._attr_scroll_area.setVisible(self._toggle_attr_btn.isChecked())
+            self._field_browser.setVisible(self._toggle_attr_btn.isChecked())
         self._refresh_filter_toggle_buttons()
 
     def _refresh_filter_toggle_buttons(self) -> None:
@@ -887,9 +1035,19 @@ class LayerCustomViewWindow(QMainWindow):
         )
         attr_active = self._has_active_attribute_filters()
 
-        self._toggle_fl_btn.setText(
-            f"Flight Levels ({'active' if fl_active else 'off'})"
-        )
+        self._toggle_fl_btn.setEnabled(self._show_flight_level)
+        if self._show_flight_level:
+            self._toggle_fl_btn.setText(
+                f"Flight Levels ({'active' if fl_active else 'off'})"
+            )
+            self._toggle_fl_btn.setToolTip("Show or hide the flight level filter controls")
+        else:
+            self._toggle_fl_btn.setChecked(False)
+            self._toggle_fl_btn.setCheckable(False)
+            self._toggle_fl_btn.setText("Flight Levels (not available)")
+            self._toggle_fl_btn.setToolTip(
+                "This layer is configured without flight levels. Flight level filtering is not available."
+            )
         self._toggle_attr_btn.setText(
             f"Attributes ({'active' if attr_active else 'off'})"
         )
@@ -1096,10 +1254,22 @@ class LayerCustomViewWindow(QMainWindow):
         for combo in self._attr_combos.values():
             self._set_combo_filter_text(combo, "")
 
+        if self._field_search_edit is not None:
+            self._field_search_edit.clear()
+            self._filled_fields_check.setChecked(False)
+        self._refresh_attribute_fields()
         self._sync_preset_button_state(0, 600)
         self._on_search_clicked()
 
     def eventFilter(self, watched: Any, event: Any) -> bool:
+        attr_scroll = getattr(self, "_attr_scroll_area", None)
+        if (
+            QEvent is not None
+            and attr_scroll is not None
+            and watched is attr_scroll.viewport()
+            and event.type() == _qt_enum_value(QEvent, "Type", "Resize")
+        ):
+            self._refresh_attribute_fields()
         if (
             QEvent is not None
             and watched is not None
@@ -1415,6 +1585,7 @@ class LayerCustomViewWindow(QMainWindow):
         selected_text = ", ".join(selected_values)
         if combo is not None:
             self._set_combo_filter_text(combo, selected_text)
+            self._on_attribute_filter_edited()
         elif edit is not None:
             edit.setText(selected_text)
 
@@ -1553,6 +1724,7 @@ class LayerCustomViewWindow(QMainWindow):
             return
 
         self._all_records = records
+        self._record_order_cache = None
 
     def _on_apply_clicked(self) -> None:
         self._current_page = 1
@@ -1570,7 +1742,8 @@ class LayerCustomViewWindow(QMainWindow):
             self._apply_view_state()
 
     def _apply_view_state(self) -> None:
-        page_records, page_fids, total_pages = self._paginate(self._sorted_records())
+        entries = self._sorted_records()
+        page_records, page_fids, total_pages = self._paginate(entries)
         self._current_records = page_records
         self._current_fids = page_fids
         self._fill_table()
@@ -1580,37 +1753,54 @@ class LayerCustomViewWindow(QMainWindow):
         shown = len(self._current_records)
         if self._quick_search_active_text.strip():
             summary = (
-                f"Showing {shown} of {matched} matching records "
-                f"(filtered from {total}) - Page {self._current_page}/{total_pages}"
+                f"Showing {shown} of {len(entries)} records ({matched} match search; "
+                f"selected records stay visible, {total} layer records) "
+                f"- Page {self._current_page}/{total_pages}"
             )
         else:
             summary = f"Showing {shown} of {total} records - Page {self._current_page}/{total_pages}"
         self._summary_label.setText(summary)
         self._prev_btn.setEnabled(self._current_page > 1)
         self._next_btn.setEnabled(self._current_page < total_pages)
+        self._update_selection_controls()
 
     def _sorted_records(self) -> list[dict[str, object]]:
-        entries = self._quick_filtered_records()
-        if not entries or self._sort_column_combo.count() == 0:
-            return entries
-
         col_name = self._sort_column_combo.currentData()
         reverse = self._sort_order_combo.currentData() == "desc"
+        cache_key = (
+            id(self._all_records), col_name, reverse,
+            self._quick_search_active_text, self._quick_search_active_column,
+        )
+        cache = self._record_order_cache
+        if cache is None or cache[0] != cache_key:
+            entries = list(self._all_records)
+            if entries and self._sort_column_combo.count():
+                entries.sort(key=lambda rec: self._record_sort_key(rec, col_name), reverse=reverse)
+            matching_fids = {int(rec.get("__fid", -1)) for rec in self._quick_filtered_records()}
+            cache = (cache_key, entries, matching_fids)
+            self._record_order_cache = cache
+
+        selected = []
+        remaining = []
+        for record in cache[1]:
+            fid = int(record.get("__fid", -1))
+            if fid in self._checked_fids:
+                selected.append(record)
+            elif fid in cache[2]:
+                remaining.append(record)
+        return selected + remaining
+
+    def _record_sort_key(self, record: dict[str, object], col_name: str):
         data_type = self._column_type(col_name)
-
-        def _key(rec: dict[str, object]):
-            val = rec.get(col_name)
-            if val is None:
+        val = record.get(col_name)
+        if val is None:
+            return (1, 0)
+        if data_type == "numeric":
+            try:
+                return (0, float(val))
+            except (TypeError, ValueError):
                 return (1, 0)
-            if data_type == "numeric":
-                try:
-                    return (0, float(val))
-                except Exception:
-                    return (1, 0)
-            return (0, str(val).lower())
-
-        entries.sort(key=_key, reverse=reverse)
-        return entries
+        return (0, str(val).lower())
 
     def _paginate(self, entries: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[int], int]:
         page_size = max(1, int(self._page_size_spin.value()))
@@ -1657,6 +1847,24 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.blockSignals(False)
         self._updating_table = False
         self._resize_table_columns_to_contents()
+        self._update_selection_controls()
+
+    def _update_selection_controls(self) -> None:
+        count = len(self._checked_fids)
+        self._selection_label.setText(f"Selected: {count}")
+        self._clear_selection_btn.setEnabled(count > 0)
+
+    def _on_layer_selection_changed(self, *_args) -> None:
+        if self._syncing_selection:
+            return
+        selected = set(self._layer.selectedFeatureIds())
+        if selected == self._checked_fids:
+            return
+        self._checked_fids = selected
+        self._clear_map_highlights()
+        self._current_page = 1
+        self._apply_view_state()
+        self._table.scrollToTop()
 
     def _resize_table_columns_to_contents(self) -> None:
         self._table.resizeColumnsToContents()
@@ -1671,7 +1879,7 @@ class LayerCustomViewWindow(QMainWindow):
     def _format_record_value(column_name: str, value: object) -> str:
         if value is None:
             return ""
-        if str(column_name).casefold() in {"fl_lower", "fl_upper"}:
+        if str(column_name).casefold() in {"fl_lower", "fl_upper", "version_nr"}:
             try:
                 numeric_value = float(value)
                 if numeric_value.is_integer():
@@ -1712,6 +1920,7 @@ class LayerCustomViewWindow(QMainWindow):
     def _update_map_selection(self) -> None:
         if self._layer is None:
             return
+        self._syncing_selection = True
         try:
             selected_fid_list = sorted(self._checked_fids)
             self._layer.selectByIds(selected_fid_list)
@@ -1719,18 +1928,17 @@ class LayerCustomViewWindow(QMainWindow):
         except Exception as exc:
             if self._logger is not None:
                 self._logger.warning(f"Unable to select feature on map: {exc}")
+        finally:
+            self._syncing_selection = False
 
     def _clear_map_selection(self) -> None:
         self._checked_fids.clear()
         if hasattr(self, "_table") and self._table is not None:
             self._table.clearSelection()
-        if self._layer is not None and hasattr(self._layer, "selectByIds"):
-            try:
-                self._layer.selectByIds([])
-            except Exception as exc:
-                if self._logger is not None:
-                    self._logger.warning(f"Unable to clear map selection: {exc}")
+        self._update_map_selection()
         self._clear_map_highlights()
+        self._current_page = 1
+        self._apply_view_state()
 
     def _update_map_highlights(self, selected_fids: list[int]) -> None:
         self._clear_map_highlights()
@@ -1762,6 +1970,8 @@ class LayerCustomViewWindow(QMainWindow):
         self._map_highlights = []
 
     def closeEvent(self, event) -> None:
+        if self._layer is not None:
+            self._layer.selectionChanged.disconnect(self._on_layer_selection_changed)
         self._clear_map_highlights()
         super().closeEvent(event)
 
@@ -1929,6 +2139,8 @@ class LayerCustomViewWindow(QMainWindow):
             except Exception:
                 previous_selected_ids = []
 
+        was_syncing = self._syncing_selection
+        self._syncing_selection = True
         try:
             self._layer.selectByIds(selected_fids)
 
@@ -1956,8 +2168,11 @@ class LayerCustomViewWindow(QMainWindow):
         finally:
             try:
                 self._layer.selectByIds(previous_selected_ids)
-            except Exception:
-                pass
+            except Exception as exc:
+                if self._logger is not None:
+                    self._logger.warning(f"Unable to restore map selection after export: {exc}")
+            finally:
+                self._syncing_selection = was_syncing
 
     def _write_table_export(self, file_path: Path, export_format: str, selected_fids: list[int]) -> None:
         extension, _file_filter, _label = self._export_format_spec(export_format)

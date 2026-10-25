@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.logging_utils import PluginLogger
+from geodata_catalog.svg_markers import portable_svg_reference
 
 try:
     from qgis.core import (
@@ -20,6 +22,11 @@ except ImportError:  # pragma: no cover
     QgsSymbolLayerUtils = None
     QgsVectorLayer = None
     QgsWkbTypes = None
+
+try:
+    from qgis.core import Qgis
+except ImportError:  # pragma: no cover
+    Qgis = None
 
 try:
     from qgis.PyQt.QtCore import QSize
@@ -122,6 +129,37 @@ def _render_style_preview_icon(style_path: str, size: int):
     return None
 
 
+def _svg_marker_symbol(reference: str):
+    try:
+        svg_layer = QgsSvgMarkerSymbolLayer.create(
+            {"name": reference, "size": "3", "outline_width": "0"}
+        )
+        symbol = QgsMarkerSymbol.createSimple({"name": "circle", "size": "2"})
+        if svg_layer is None or symbol is None or symbol.symbolLayerCount() == 0:
+            raise ConfigurationException("QGIS could not create the SVG marker symbol.")
+        if not symbol.changeSymbolLayer(0, svg_layer):
+            raise ConfigurationException("QGIS could not attach the SVG marker symbol layer.")
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ConfigurationException("QGIS could not create the SVG marker symbol.") from exc
+    return symbol
+
+
+def generate_svg_preview_icon(svg_reference: str, size: int = 16):
+    """Render the same embedded SVG symbol used when loading a layer."""
+    if any(api is None for api in (QIcon, QSize, QgsMarkerSymbol, QgsSvgMarkerSymbolLayer, QgsSymbolLayerUtils)):
+        return None
+    reference = portable_svg_reference(svg_reference)
+    if not reference:
+        return None
+    try:
+        pixmap = QgsSymbolLayerUtils.symbolPreviewPixmap(_svg_marker_symbol(reference), QSize(size, size))
+        if pixmap is None or pixmap.isNull():
+            raise ConfigurationException("QGIS could not render the SVG marker preview.")
+        return QIcon(pixmap)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ConfigurationException("QGIS could not render the SVG marker preview.") from exc
+
+
 class StyleService:
     """Applies optional QML styles to loaded layers."""
 
@@ -144,24 +182,33 @@ class StyleService:
 
     def apply_svg_marker(self, layer, svg_path: str | None) -> None:
         """Apply a configured SVG marker to a point layer."""
-        if not svg_path or QgsMarkerSymbol is None or QgsSvgMarkerSymbolLayer is None:
+        if not svg_path:
             return
-        if QgsWkbTypes is not None and layer.geometryType() != QgsWkbTypes.PointGeometry:
+        if QgsMarkerSymbol is None or QgsSvgMarkerSymbolLayer is None:
+            self._logger.warning("SVG marker could not be applied: QGIS symbol APIs are unavailable.")
+            return
+        point_geometry = getattr(getattr(Qgis, "GeometryType", None), "Point", None)
+        if point_geometry is None and QgsWkbTypes is not None:
+            point_geometry = getattr(QgsWkbTypes, "PointGeometry", None)
+        if point_geometry is None:
+            self._logger.warning("SVG marker could not be applied: QGIS point geometry type is unavailable.")
+            return
+        if layer.geometryType() != point_geometry:
             self._logger.warning(f"SVG marker ignored for non-point layer '{layer.name()}'.")
             return
         try:
-            svg_layer = QgsSvgMarkerSymbolLayer.create(
-                {"name": str(svg_path), "size": "3", "outline_width": "0"}
-            )
-            symbol = QgsMarkerSymbol.createSimple({"name": "circle", "size": "2"})
-            if svg_layer is None or symbol is None or symbol.symbolLayerCount() == 0:
+            reference = portable_svg_reference(svg_path)
+            if not reference:
                 return
-            symbol.changeSymbolLayer(0, svg_layer)
+            symbol = _svg_marker_symbol(reference)
             renderer = layer.renderer()
             if renderer is None or not hasattr(renderer, "setSymbol"):
+                self._logger.warning(
+                    f"SVG marker not applied to '{layer.name()}': its renderer does not support a single symbol."
+                )
                 return
             renderer.setSymbol(symbol)
             layer.triggerRepaint()
-            self._logger.info(f"Applied SVG marker: {svg_path}")
-        except Exception as exc:
-            self._logger.warning(f"Failed to apply SVG marker '{svg_path}': {exc}")
+            self._logger.info(f"Applied embedded SVG marker to '{layer.name()}'.")
+        except (ConfigurationException, RuntimeError, TypeError, ValueError) as exc:
+            self._logger.warning(f"Failed to apply SVG marker to '{layer.name()}': {exc}")

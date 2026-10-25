@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.metadata.settings_manager import SettingsManager
+from geodata_catalog.svg_markers import portable_svg_reference
 
 
 class LayerRepository:
@@ -20,6 +23,14 @@ class LayerRepository:
         return [layer for layer in self.list_all() if layer.datasource_id == datasource_id]
 
     def upsert(self, layer: LayerDefinition) -> None:
+        if "svg_marker_path" in layer.metadata:
+            layer = replace(
+                layer,
+                metadata={
+                    **layer.metadata,
+                    "svg_marker_path": portable_svg_reference(layer.metadata["svg_marker_path"]),
+                },
+            )
         items = self.list_all()
         replaced = False
         for index, item in enumerate(items):

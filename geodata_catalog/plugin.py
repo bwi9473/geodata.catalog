@@ -1239,8 +1239,12 @@ class GeoDataCatalogPlugin:
         if self._run_dialog(dialog) != self._accepted_code(dialog):
             return
 
-        config = dialog.get_config()
-        self._layer_config_repository.save(config)
+        try:
+            config = dialog.get_config()
+            self._layer_config_repository.save(config)
+        except (GeoDataCatalogException, OSError) as exc:
+            self._show_error("Layer Configuration", f"Unable to save layer configuration: {exc}")
+            return
         # Invalidate cache so next Refresh picks up the new config
         self._layer_cache.pop(datasource_id, None)
         self._logger.info(

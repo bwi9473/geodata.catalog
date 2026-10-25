@@ -170,11 +170,24 @@ Each layer in the catalog can have its own layer name override, label column, se
 |---|---|
 | **Layer Name** | Name shown for this layer in the QGIS **Layers** panel. Leave empty to keep the default source-discovered name. |
 | **Label Column** | Attribute field used as the QGIS feature label. Overrides the global `label_column` from the datasource JSON. |
+| **Point marker** | Choose a supplied SVG or use **...** to open the QGIS SVG browser. The SVG itself is embedded in the saved configuration, instead of storing a computer-specific file path. Choose **Simple marker (default)** to remove the override. |
 | **Enable Flight Level Filter** | Controls whether the Flight Level section is shown in **Layer Filter…** for this layer. When disabled, only custom attribute filters are available. |
 | **Searchable Columns** | Table of columns shown as filters in the Layer Filter (displayed above the FL section). Each row has a **Field Name**, **Display Label**, **Data Type** (`varchar` or `numeric`), **Use Distinct**, and optional **Filter By**. When **Use Distinct** is checked, the Layer Filter shows both a dropdown (for quick distinct-value selection) and a free-text field (for manual multi-value entry). Select **(no filter)** in the dropdown to clear the dropdown selection. |
 | **Custom View Columns** | Table of columns shown in the right-click **Open Custom View…** dialog as multi-record blocks. Each row has a **Field Name**, **Display Label**, and **Data Type**. |
 
 Use the **Add Row** / **Remove Row** buttons to manage the list of searchable columns, then click **Save**.
+
+#### Moving SVG markers to another computer
+
+Saved `svg_marker_path` values use QGIS's native `base64:` format and contain the complete SVG.
+The marker does not depend on the original file, QGIS installation directory, drive letter, or SVG search paths.
+Previews and loaded layers use that same embedded symbol. SVGs with external linked files or stylesheets must first be made self-contained; invalid or missing files are reported instead of saving a broken marker.
+
+Copy the JSON file containing the marker setting: **Edit Layer Config** writes to `layer_config.json`, while business-layer metadata is stored in `config.json`. Copy both files to transfer the datasource and per-layer settings together. No separate SVG files are required for embedded markers. These files may contain connection settings, so share them only with trusted recipients.
+
+Existing absolute SVG paths remain supported. Paths into an old QGIS installation (including Windows short paths and repeated separators) are resolved against the current computer's QGIS SVG folders. Old plugin aviation-symbol paths are resolved against the installed plugin. Saving a layer's configuration rewrites its SVG as embedded data; other layers are left unchanged. A missing custom SVG cannot be recovered from its old path alone: select it again on a computer where it is available and save before transferring the configuration.
+
+When a configured marker cannot be read or created, layer loading preserves the existing layer symbol and records a warning in the plugin log rather than applying a missing-image `?` marker.
 
 ### Custom View (QGIS Layers panel)
 
@@ -186,8 +199,21 @@ After loading a layer in QGIS:
 4. Use **Sort by**, **Ascending/Descending**, and page navigation (**Previous/Next**) to browse records.
 5. Use **Export CSV** or **Export Excel** to export all records in the current custom-view column layout.
 6. Click a row to highlight the feature on the map. Use the checkbox column for selection behavior similar to the QGIS attribute table; multiple checked rows are combined into one map selection.
+7. Selecting or deselecting features on the map also updates the checkboxes. Selected records move to the top, keeping the chosen sort order within the selected and unselected groups, and the view returns to the first page. Existing selections are checked when the window opens.
+8. Selected records remain visible even when they do not match **Search in results**. The layer filter still applies; records outside the layer's result set are not added. **Selected** shows the total layer selection, including any selected records outside that result set.
+9. Use **Clear selection** to uncheck all records across all pages and clear this layer's map selection. Clicking records in the table does not immediately move rows under the mouse; selected-first ordering is applied on the next search, sort, page change, or map selection.
 
 The displayed fields are controlled by **Custom View Columns** in **Edit Layer Config…**.
+For layers configured without flight levels, **Flight Levels (not available)** is greyed out and cannot be clicked. Its tooltip explains why flight level filtering is unavailable.
+
+For layers with many filter fields:
+
+- The attribute fields automatically flow into one to four columns as you resize the window.
+- Use **Find filter field** to find a field by its technical name or display label. This only changes which input fields are visible; it does not search the result records.
+- Enable **Only filled fields** to review the filters you have entered, including checkbox values such as `N`.
+- The field counter also indicates filled fields hidden by the field search. Hidden fields keep their values and are still included when you click **Search**.
+- Drag the horizontal divider between filters and results to give either section more space. The field search and the **Search**, **Reset**, and **Save** buttons stay outside the scrolling field list.
+- **Reset** clears all filter values and restores the full field list.
 
 The QGIS **Layers** panel context menu includes both **Layer Filter…** and **Open Custom View…** entries provided by GeoData Catalog.
 

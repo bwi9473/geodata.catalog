@@ -16,6 +16,83 @@ def test_normalized_filter_text_trims_and_joins_values():
     )
 
 
+def test_version_number_display_omits_decimal_for_integer_values():
+    assert LayerCustomViewWindow._format_record_value("VERSION_NR", 2235.0) == "2235"
+    assert LayerCustomViewWindow._format_record_value("version_nr", "2235.0") == "2235"
+
+
+class _FilterToggleButton:
+    def __init__(self):
+        self.checked = True
+        self.checkable = True
+        self.enabled = True
+        self.text = ""
+        self.tooltip = ""
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+    def setChecked(self, checked):
+        self.checked = checked
+
+    def setCheckable(self, checkable):
+        self.checkable = checkable
+
+    def setText(self, text):
+        self.text = text
+
+    def setToolTip(self, tooltip):
+        self.tooltip = tooltip
+
+
+def _filter_toggle_window(show_flight_level, enabled):
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    window._show_flight_level = show_flight_level
+    window._enabled_check = type("_Check", (), {"isChecked": lambda self: enabled})()
+    window._toggle_fl_btn = _FilterToggleButton()
+    window._toggle_attr_btn = _FilterToggleButton()
+    window._filter_panel = None
+    window._has_active_attribute_filters = lambda: False
+    return window
+
+
+def test_flight_level_toggle_is_disabled_for_layers_without_flight_levels():
+    window = _filter_toggle_window(False, True)
+
+    window._refresh_filter_toggle_buttons()
+
+    button = window._toggle_fl_btn
+    assert button.enabled is False
+    assert button.checked is False
+    assert button.checkable is False
+    assert button.text == "Flight Levels (not available)"
+    assert "configured without flight levels" in button.tooltip
+    assert window._toggle_attr_btn.enabled is True
+    window._refresh_filter_toggle_buttons()
+    assert button.enabled is False
+
+
+def test_flight_level_toggle_stays_available_when_filter_is_off():
+    window = _filter_toggle_window(True, False)
+
+    window._refresh_filter_toggle_buttons()
+
+    button = window._toggle_fl_btn
+    assert button.enabled is True
+    assert button.checkable is True
+    assert button.text == "Flight Levels (off)"
+    assert "Show or hide" in button.tooltip
+
+
+def test_flight_level_toggle_shows_active_filter():
+    window = _filter_toggle_window(True, True)
+
+    window._refresh_filter_toggle_buttons()
+
+    assert window._toggle_fl_btn.enabled is True
+    assert window._toggle_fl_btn.text == "Flight Levels (active)"
+
+
 def test_resolve_single_parent_value_accepts_one_known_value():
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     window._distinct_values = {"sector_combination": ["DEC365", "DEC366"]}
@@ -73,6 +150,187 @@ class _DummyCombo:
 
     def currentText(self) -> str:
         return self._editor.text()
+
+
+class _FieldBrowserWidget(_DummyLineEdit):
+    def __init__(self, text="", checked=False):
+        super().__init__(text)
+        self.checked = checked
+        self.visible = True
+
+    def isChecked(self):
+        return self.checked
+
+    def setChecked(self, checked):
+        self.checked = checked
+
+    def clear(self):
+        self.setText("")
+
+    def setVisible(self, visible):
+        self.visible = visible
+
+
+class _FieldGrid:
+    def __init__(self):
+        self.items = []
+        self.stretches = {}
+
+    def count(self):
+        return len(self.items)
+
+    def takeAt(self, index):
+        return self.items.pop(index)
+
+    def setColumnStretch(self, column, stretch):
+        self.stretches[column] = stretch
+
+    def addWidget(self, widget, row, column):
+        self.items.append((widget, row, column))
+
+
+def _field_browser_window():
+    from geodata_catalog.ui.layer_custom_view_dock import _UNCHECKED_STATE
+
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    window._attr_edits = {
+        "AERODROMEID": _FieldBrowserWidget("EHAM"),
+        "AOI_SITUATION": _FieldBrowserWidget(),
+    }
+    window._attr_combos = {"TRAFFIC_CLASS": _DummyCombo(" CIVIL, MILITARY ")}
+    window._attr_checks = {
+        "ACTIVE": type("_Check", (), {"checkState": lambda self: _UNCHECKED_STATE})(),
+    }
+    window._checkbox_value_map = {}
+    window._attr_labels = {
+        "AERODROMEID": "Aerodrome",
+        "AOI_SITUATION": "Situation",
+        "TRAFFIC_CLASS": "Traffic category",
+        "ACTIVE": "Active",
+    }
+    window._attr_types = {name: "varchar" for name in window._attr_labels}
+    window._attribute_fields = [
+        (name, _FieldBrowserWidget())
+        for name in ("AERODROMEID", "AOI_SITUATION", "TRAFFIC_CLASS")
+    ]
+    window._checkbox_fields = [("ACTIVE", _FieldBrowserWidget())]
+    window._attribute_grid = _FieldGrid()
+    window._checkbox_grid = _FieldGrid()
+    window._attribute_layout_key = None
+    window._field_search_edit = _FieldBrowserWidget()
+    window._filled_fields_check = _FieldBrowserWidget()
+    window._field_count_label = _FieldBrowserWidget()
+    window._no_fields_label = _FieldBrowserWidget()
+    viewport = type("_Viewport", (), {"width": lambda self: self.available_width})()
+    viewport.available_width = 1200
+    window._attr_scroll_area = type("_Scroll", (), {"viewport": lambda self: viewport})()
+    window._show_flight_level = False
+    return window
+
+
+def test_filter_grid_breakpoints_keep_fields_readable_and_limit_columns():
+    column_count = LayerCustomViewWindow._filter_grid_column_count
+    for width, expected in [(0, 1), (260, 1), (533, 1), (534, 2),
+                            (807, 2), (808, 3), (1081, 3), (1082, 4), (3000, 4)]:
+        assert column_count(width, 20) == expected
+    assert column_count(3000, 2) == 2
+    assert column_count(3000, 0) == 1
+
+
+def test_layout_enums_support_scoped_qt6_and_unscoped_qt5():
+    from geodata_catalog.ui.layer_custom_view_dock import _qt_enum_value
+
+    scoped = type("_Qt6", (), {"Orientation": type("_Orientation", (), {"Vertical": 2})})
+    legacy = type("_Qt5", (), {"Orientation": type("_Orientation", (), {}), "Vertical": 2})
+    assert _qt_enum_value(scoped, "Orientation", "Vertical") == 2
+    assert _qt_enum_value(legacy, "Orientation", "Vertical") == 2
+
+
+def test_field_search_matches_names_and_labels_without_changing_filters():
+    window = _field_browser_window()
+    original_filter = window._current_filter()
+    window._field_search_edit.setText("  traffic CLASS ")
+    window._refresh_attribute_fields()
+    assert all(not cell.visible for _name, cell in window._attribute_fields)
+    assert window._no_fields_label.visible is True
+
+    for query in (" traffic_class ", " TRAFFIC CATEGORY "):
+        window._field_search_edit.setText(query)
+        window._refresh_attribute_fields()
+        assert [name for name, cell in window._attribute_fields if cell.visible] == ["TRAFFIC_CLASS"]
+        assert window._no_fields_label.visible is False
+        assert "1 of 4 fields | 3 filled" in window._field_count_label.text()
+        assert "2 filled fields hidden" in window._field_count_label.text()
+        assert window._current_filter() == original_filter
+
+
+def test_filled_fields_include_unchecked_checkbox_and_multi_value_dropdown():
+    window = _field_browser_window()
+    window._filled_fields_check.setChecked(True)
+    window._refresh_attribute_fields()
+    assert [name for name, cell in window._attribute_fields if cell.visible] == [
+        "AERODROMEID", "TRAFFIC_CLASS",
+    ]
+    assert window._checkbox_fields[0][1].visible is True
+    assert window._attribute_filter_value("ACTIVE") == "N"
+    assert window._attribute_filter_value("TRAFFIC_CLASS") == "CIVIL, MILITARY"
+    assert window._field_count_label.text() == "3 of 4 fields | 3 filled"
+
+    window._attr_edits["AERODROMEID"].clear()
+    window._refresh_attribute_fields()
+    assert window._attribute_fields[0][1].visible is False
+    assert window._field_count_label.text() == "2 of 4 fields | 2 filled"
+
+
+def test_field_layout_reflows_existing_widgets_without_gaps_or_stale_columns():
+    window = _field_browser_window()
+    window._refresh_attribute_fields()
+    original_cells = [cell for _name, cell in window._attribute_fields]
+    assert [(row, col) for _cell, row, col in window._attribute_grid.items] == [
+        (0, 0), (0, 1), (0, 2),
+    ]
+    window._attr_scroll_area.viewport().available_width = 598
+    window._refresh_attribute_fields()
+    assert [(row, col) for _cell, row, col in window._attribute_grid.items] == [
+        (0, 0), (0, 1), (1, 0),
+    ]
+    assert window._attribute_grid.stretches == {0: 1, 1: 1, 2: 0, 3: 0}
+    assert [cell for cell, _row, _col in window._attribute_grid.items] == original_cells
+    window._field_search_edit.setText("traffic")
+    window._refresh_attribute_fields()
+    assert window._attribute_grid.items == [(original_cells[2], 0, 0)]
+    assert window._attribute_grid.stretches == {0: 1, 1: 0, 2: 0, 3: 0}
+
+
+def test_reset_filters_restores_all_fields_and_clears_hidden_values():
+    window = _field_browser_window()
+    window._field_search_edit.setText("traffic")
+    window._filled_fields_check.setChecked(True)
+    window._enabled_check = window._lower_spin = window._upper_spin = None
+    window._attr_checks = {}
+    window._checkbox_fields = []
+    window._set_combo_filter_text = lambda combo, text: combo.lineEdit().setText(text)
+    window._sync_preset_button_state = lambda _lower, _upper: None
+    applied = []
+    window._on_search_clicked = lambda: applied.append(window._current_filter())
+    window._on_reset_filters()
+    assert window._field_search_edit.text() == ""
+    assert window._filled_fields_check.isChecked() is False
+    assert all(cell.visible for _name, cell in window._attribute_fields)
+    assert applied[0].attributes == []
+    assert window._field_count_label.text() == "3 of 3 fields | 0 filled"
+
+
+def test_viewport_resize_reflows_fields_with_qt6_scoped_event(monkeypatch):
+    window = _field_browser_window()
+    window._attr_combo_line_edits = {}
+    scoped_event = type("_Event", (), {"Type": type("_Type", (), {"Resize": 14})})
+    monkeypatch.setattr("geodata_catalog.ui.layer_custom_view_dock.QEvent", scoped_event)
+    event = type("_Resize", (), {"type": lambda self: 14})()
+    window.eventFilter(window._attr_scroll_area.viewport(), event)
+    assert window._attribute_layout_key == (
+        4, ("ACTIVE", "AERODROMEID", "AOI_SITUATION", "TRAFFIC_CLASS"),
+    )
 
 
 class _DummyExportFormatCombo:
@@ -145,6 +403,7 @@ def test_record_cell_click_toggles_clicked_record():
     window._current_fids = [11, 12, 13]
     window._logger = None
     window._update_map_highlights = lambda _fids: None
+    window._fill_table = lambda: None
 
     window._on_record_cell_clicked(1, 1)
     assert layer.selected_fids == [11, 12, 13]
@@ -177,12 +436,286 @@ def test_clear_map_selection_removes_checked_features_and_highlights():
     window._logger = None
     cleared = {"highlights": False}
     window._clear_map_highlights = lambda: cleared.update(highlights=True)
+    window._update_map_highlights = lambda _fids: None
+    window._apply_view_state = lambda: None
 
     window._clear_map_selection()
 
     assert window._checked_fids == set()
     assert layer.selected_fids == []
     assert cleared["highlights"] is True
+
+
+class _SelectionSignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def emit(self):
+        for callback in self.callbacks:
+            callback([], [], False)
+
+
+class _SignallingLayer(_DummySelectableLayer):
+    def __init__(self):
+        super().__init__()
+        self.selectionChanged = _SelectionSignal()
+        self.selection_writes = 0
+
+    def selectedFeatureIds(self):
+        return list(self.selected_fids)
+
+    def selectByIds(self, fids):
+        super().selectByIds(fids)
+        self.selection_writes += 1
+        self.selectionChanged.emit()
+
+
+class _SelectionWidget:
+    def __init__(self, value=None):
+        self.value = value
+        self.enabled = None
+        self.text = ""
+
+    def currentData(self):
+        return self.value
+
+    def count(self):
+        return 1
+
+    def setText(self, text):
+        self.text = text
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+
+def _selection_window():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    window._all_records = [
+        {"__fid": fid, "name": name}
+        for fid, name in [(1, "Alpha"), (2, "Bravo"), (3, "Charlie"), (4, "Delta")]
+    ]
+    window._columns = [{"name": "name", "type": "varchar"}]
+    window._checked_fids = set()
+    window._syncing_selection = False
+    window._record_order_cache = None
+    window._current_page = 1
+    window._quick_search_active_text = ""
+    window._quick_search_active_column = None
+    window._sort_column_combo = _SelectionWidget("name")
+    window._sort_order_combo = _SelectionWidget("asc")
+    window._page_size_spin = type("_PageSize", (), {"value": lambda self: 2})()
+    window._summary_label = _SelectionWidget()
+    window._selection_label = _SelectionWidget()
+    window._clear_selection_btn = _SelectionWidget()
+    window._prev_btn = _SelectionWidget()
+    window._next_btn = _SelectionWidget()
+    window._layer = _SignallingLayer()
+    window._logger = None
+    window._map_canvas = None
+    window._map_highlights = []
+    window._table = type("_Table", (), {
+        "scrollToTop": lambda self: None,
+        "clearSelection": lambda self: None,
+    })()
+    window._fill_table = lambda: None
+    window._layer.selectionChanged.connect(window._on_layer_selection_changed)
+    return window
+
+
+def test_map_selection_pins_checks_and_returns_to_first_page_without_feedback():
+    window = _selection_window()
+    window._current_page = 2
+
+    window._layer.selectByIds([4, 3])
+
+    assert window._checked_fids == {3, 4}
+    assert window._current_page == 1
+    assert window._current_fids == [3, 4]
+    assert window._selection_label.text == "Selected: 2"
+    assert window._clear_selection_btn.enabled is True
+    assert window._layer.selection_writes == 1
+
+    window._layer.selectByIds([2])
+    assert window._checked_fids == {2}
+    assert window._current_fids == [2, 1]
+
+    window._layer.selectByIds([])
+    assert window._checked_fids == set()
+    assert window._current_fids == [1, 2]
+    assert window._clear_selection_btn.enabled is False
+
+
+def test_selected_records_bypass_quick_search_but_not_layer_results():
+    window = _selection_window()
+    window._quick_search_active_text = "bravo"
+    window._quick_search_active_column = "name"
+
+    window._layer.selectByIds([4, 99])
+
+    assert window._current_fids == [4, 2]
+    assert window._selection_label.text == "Selected: 2"
+    assert "1 match search" in window._summary_label.text
+    assert window._all_records[0]["__fid"] == 1
+    window._clear_map_selection()
+    assert window._current_fids == [2]
+    assert window._layer.selectedFeatureIds() == []
+    assert window._clear_selection_btn.enabled is False
+
+
+def test_selection_order_preserves_descending_sort_and_paging():
+    window = _selection_window()
+    window._sort_order_combo.value = "desc"
+    window._layer.selectByIds([1, 3, 4])
+    assert window._current_fids == [4, 3]
+
+    window._on_next_page()
+    assert window._current_fids == [1, 2]
+    window._clear_map_selection()
+    assert window._current_page == 1
+    assert window._current_fids == [4, 3]
+    assert window._checked_fids == set()
+
+
+def test_table_selection_does_not_move_rows_or_reenter_view_refresh():
+    window = _selection_window()
+    window._apply_view_state()
+    window._on_record_cell_clicked(1, 1)
+    assert window._checked_fids == {2}
+    assert window._current_fids == [1, 2]
+    assert window._layer.selectedFeatureIds() == [2]
+    assert window._syncing_selection is False
+
+
+def test_selection_reuses_sort_cache_and_invalidates_on_sort_search_and_reload():
+    window = _selection_window()
+    window._apply_view_state()
+    cache = window._record_order_cache
+    window._layer.selectByIds([4])
+    assert window._record_order_cache is cache
+
+    window._sort_order_combo.value = "desc"
+    window._apply_view_state()
+    assert window._record_order_cache is not cache
+    assert window._current_fids == [4, 3]
+
+    window._quick_search_active_text = "bravo"
+    window._apply_view_state()
+    assert window._current_fids == [4, 2]
+
+    window._all_records = [{"__fid": 5, "name": "Bravo"}]
+    window._apply_view_state()
+    assert window._current_fids == [5]
+
+
+def test_fill_table_checks_selected_features_and_unchecks_deselected_features(monkeypatch):
+    class _Item:
+        def __init__(self, text):
+            self.text = text
+
+        def setFlags(self, flags):
+            self.flags = flags
+
+        def setCheckState(self, state):
+            self.state = state
+
+        def setData(self, role, value):
+            self.fid = value
+
+    class _Table:
+        def __init__(self):
+            self.items = {}
+
+        def blockSignals(self, blocked):
+            self.blocked = blocked
+
+        def setRowCount(self, count):
+            self.row_count = count
+
+        def setItem(self, row, column, item):
+            self.items[row, column] = item
+
+    monkeypatch.setattr("geodata_catalog.ui.layer_custom_view_dock.QTableWidgetItem", _Item)
+    flags = {
+        "enabled": 1, "checkable": 2, "selectable": 4,
+        "checked": 2, "unchecked": 0, "user_role": 256,
+    }
+    monkeypatch.setattr("geodata_catalog.ui.layer_custom_view_dock._ITEM_FLAGS", flags)
+    window = _selection_window()
+    window._table = _Table()
+    window._resize_table_columns_to_contents = lambda: None
+    window._apply_record_highlight = lambda _item, _selected: None
+    window._current_records = window._all_records[:2]
+    window._current_fids = [1, 2]
+    window._checked_fids = {2}
+
+    LayerCustomViewWindow._fill_table(window)
+    assert window._table.items[0, 0].state == flags["unchecked"]
+    assert window._table.items[1, 0].state == flags["checked"]
+    assert window._table.items[1, 0].fid == 2
+    assert window._table.blocked is False
+    assert window._updating_table is False
+    assert window._clear_selection_btn.enabled is True
+
+    window._checked_fids.clear()
+    LayerCustomViewWindow._fill_table(window)
+    assert window._table.items[1, 0].state == flags["unchecked"]
+    assert window._clear_selection_btn.enabled is False
+
+
+def test_selection_item_flags_support_scoped_qt6_enums(monkeypatch):
+    from geodata_catalog.ui.layer_custom_view_dock import _get_item_flags
+
+    class _ScopedQt:
+        class ItemFlag:
+            ItemIsEnabled = 1
+            ItemIsUserCheckable = 2
+            ItemIsSelectable = 4
+
+        class CheckState:
+            Checked = 2
+            Unchecked = 0
+
+        class ItemDataRole:
+            UserRole = 256
+
+    monkeypatch.setattr("geodata_catalog.ui.layer_custom_view_dock.Qt", _ScopedQt)
+    flags = _get_item_flags()
+    assert flags["user_role"] == 256
+    assert flags["checked"] == 2
+    assert flags["checkable"] == 2
+
+
+def test_vector_export_temporary_selection_does_not_reorder_results(monkeypatch, tmp_path):
+    class _Writer:
+        NoError = 0
+
+        class SaveVectorOptions:
+            pass
+
+        @staticmethod
+        def writeAsVectorFormatV3(layer, _path, _context, _options):
+            assert layer.selectedFeatureIds() == [1, 2, 3, 4]
+            return (0, "")
+
+    monkeypatch.setattr("geodata_catalog.ui.layer_custom_view_dock.QgsVectorFileWriter", _Writer)
+    window = _selection_window()
+    window._layer.name = lambda: "Sample"
+    window._layer.selectByIds([4])
+    window._on_next_page()
+    previous_page = window._current_page
+    previous_fids = list(window._current_fids)
+
+    window._write_vector_export(tmp_path / "out.geojson", "geojson", [1, 2, 3, 4])
+
+    assert window._layer.selectedFeatureIds() == [4]
+    assert window._checked_fids == {4}
+    assert window._current_page == previous_page
+    assert window._current_fids == previous_fids
+    assert window._syncing_selection is False
 
 
 def test_map_selection_uses_checked_records_only():

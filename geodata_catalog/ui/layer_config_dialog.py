@@ -3,15 +3,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.metadata.layer_config_repository import LayerConfig
-from geodata_catalog.services.style_service import generate_style_preview_icon, list_style_files
+from geodata_catalog.services.style_service import (
+    generate_style_preview_icon,
+    generate_svg_preview_icon,
+    list_style_files,
+)
+from geodata_catalog.svg_markers import is_embedded_svg, portable_svg_reference
 
 try:
     from qgis.PyQt.QtCore import QSize
-    from qgis.PyQt.QtGui import QIcon
 except ImportError:  # pragma: no cover
     QSize = None
-    QIcon = None
 
 _SMALL_ICON_SIZE = QSize(16, 16) if QSize is not None else None
 
@@ -161,6 +165,9 @@ class LayerConfigDialog(QDialog):
         label_form.addRow("", self._enable_fl_filter_check)
 
         self._svg_marker_combo = QComboBox()
+        self._svg_marker_combo.setToolTip(
+            "SVG markers are embedded in the configuration so they also work on another computer."
+        )
         self._svg_marker_combo.addItem("Simple marker (default)", "")
         for name, path in self._aviation_svg_markers():
             self._add_svg_marker_item(name, path)
@@ -231,7 +238,7 @@ class LayerConfigDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         save_btn = QPushButton("Save")
         cancel_btn.clicked.connect(self.reject)
-        save_btn.clicked.connect(self.accept)
+        save_btn.clicked.connect(self._on_save)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
@@ -240,12 +247,22 @@ class LayerConfigDialog(QDialog):
     # Slot handlers                                                        #
     # ------------------------------------------------------------------ #
 
+    def _on_save(self) -> None:
+        try:
+            reference = portable_svg_reference(self._svg_marker_path)
+            if reference:
+                generate_svg_preview_icon(reference)
+        except ConfigurationException as exc:
+            QMessageBox.warning(self, "SVG marker", str(exc))
+            return
+        self._svg_marker_path = reference or ""
+        self.accept()
+
     def _on_refresh_fields(self) -> None:
         if self._refresh_fields is None:
             return
-        standard_button = getattr(QMessageBox, "StandardButton", QMessageBox)
-        yes_button = standard_button.Yes
-        no_button = standard_button.No
+        yes_button = _enum(QMessageBox, "StandardButton", "Yes")
+        no_button = _enum(QMessageBox, "StandardButton", "No")
         response = QMessageBox.warning(
             self,
             "Refresh Attributes",
@@ -283,7 +300,7 @@ class LayerConfigDialog(QDialog):
             layername=layername,
             category_label=category_label,
             label_column=label_col,
-            svg_marker_path=self._svg_marker_path or None,
+            svg_marker_path=portable_svg_reference(self._svg_marker_path),
             qml_style_path=self._qml_style_path or None,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
             field_columns=field_columns,
@@ -473,21 +490,31 @@ class LayerConfigDialog(QDialog):
         self._svg_marker_path = str(self._svg_marker_combo.currentData() or "")
 
     def _add_svg_marker_item(self, name: str, svg_path: str) -> None:
-        if QIcon is None:
-            self._svg_marker_combo.addItem(name, svg_path)
+        reference = portable_svg_reference(svg_path)
+        icon = generate_svg_preview_icon(reference) if reference else None
+        if icon is None:
+            self._svg_marker_combo.addItem(name, reference or "")
             return
-        self._svg_marker_combo.addItem(QIcon(svg_path), name, svg_path)
+        self._svg_marker_combo.addItem(icon, name, reference)
 
     def _set_svg_marker_path(self, svg_path: str) -> None:
-        for index in range(self._svg_marker_combo.count()):
-            if self._svg_marker_combo.itemData(index) == svg_path:
-                self._svg_marker_combo.setCurrentIndex(index)
-                self._svg_marker_path = svg_path
-                return
-        if svg_path:
-            self._add_svg_marker_item("Custom SVG", svg_path)
+        try:
+            reference = portable_svg_reference(svg_path) or ""
+        except ConfigurationException as exc:
+            self._svg_marker_combo.addItem("Unavailable SVG (choose another marker)", svg_path)
             self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
-        self._svg_marker_path = svg_path
+            self._svg_marker_path = svg_path
+            QMessageBox.warning(self, "SVG marker", str(exc))
+            return
+        for index in range(self._svg_marker_combo.count()):
+            if self._svg_marker_combo.itemData(index) == reference:
+                self._svg_marker_combo.setCurrentIndex(index)
+                self._svg_marker_path = reference
+                return
+        if reference:
+            self._add_svg_marker_item("Custom SVG (embedded)", reference)
+            self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
+        self._svg_marker_path = reference
 
     def _populate_qml_style_combo(self) -> None:
         self._qml_style_combo.blockSignals(True)
@@ -539,7 +566,7 @@ class LayerConfigDialog(QDialog):
         dialog.resize(620, 460)
         layout = QVBoxLayout(dialog)
         selector = QgsSvgSelectorWidget(dialog)
-        if self._svg_marker_path:
+        if self._svg_marker_path and not is_embedded_svg(self._svg_marker_path):
             selector.setSvgPath(self._svg_marker_path)
         selected_path = {"value": self._svg_marker_path}
         selector.svgSelected.connect(lambda path: selected_path.__setitem__("value", str(path)))

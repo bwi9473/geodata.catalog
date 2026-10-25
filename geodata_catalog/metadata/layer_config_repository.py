@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from geodata_catalog.svg_markers import portable_svg_reference
 
 
 @dataclass
@@ -143,6 +145,7 @@ class LayerConfigRepository:
         return self._load()
 
     def save(self, config: LayerConfig) -> None:
+        config = replace(config, svg_marker_path=portable_svg_reference(config.svg_marker_path))
         configs = self._load()
         replaced = False
         for i, cfg in enumerate(configs):
@@ -191,7 +194,7 @@ class LayerConfigRepository:
             return
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
-            [c.to_dict() for c in configs],
+            [config.to_dict() for config in configs],
             indent=2,
             ensure_ascii=False,
         )
