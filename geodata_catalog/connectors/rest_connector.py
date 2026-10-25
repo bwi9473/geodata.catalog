@@ -33,7 +33,7 @@ class RestConnector(BaseConnector):
         self._config = config
         self._temp_files: dict[str, Path] = {}
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         base_url = self._config.get("url")
         if not base_url:
             raise ConfigurationException("REST datasource requires 'url'.")
@@ -72,7 +72,7 @@ class RestConnector(BaseConnector):
                 return layer
         raise LayerLoadException(f"REST layer '{layer_name}' not found.")
 
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
 

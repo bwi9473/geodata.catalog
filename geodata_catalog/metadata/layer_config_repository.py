@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from geodata_catalog.svg_markers import portable_svg_reference
 
 
 @dataclass
@@ -15,9 +17,11 @@ class LayerConfig:
     layername: str | None = None
     category_label: str | None = None
     label_column: str | None = None
+    svg_marker_path: str | None = None
+    qml_style_path: str | None = None
     enable_fl_filter: bool = True
-    searchable_columns: list[dict[str, str | bool]] = field(default_factory=list)
-    view_columns: list[dict[str, str]] = field(default_factory=list)
+    field_columns: list[dict[str, str | bool]] = field(default_factory=list)
+    key_column: str | None = None
 
     def key(self) -> str:
         return f"{self.datasource_id}:{self.layer_name}"
@@ -29,23 +33,88 @@ class LayerConfig:
             "layername": self.layername,
             "category_label": self.category_label,
             "label_column": self.label_column,
+            "svg_marker_path": self.svg_marker_path,
+            "qml_style_path": self.qml_style_path,
             "enable_fl_filter": self.enable_fl_filter,
-            "searchable_columns": self.searchable_columns,
-            "view_columns": self.view_columns,
+            "field_columns": self.field_columns,
+            "key_column": self.key_column,
         }
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "LayerConfig":
+        field_columns = data.get("field_columns") or LayerConfig._legacy_field_columns(data)
         return LayerConfig(
             datasource_id=data["datasource_id"],
             layer_name=data["layer_name"],
             layername=data.get("layername"),
             category_label=data.get("category_label"),
             label_column=data.get("label_column"),
+            svg_marker_path=data.get("svg_marker_path"),
+            qml_style_path=data.get("qml_style_path"),
             enable_fl_filter=bool(data.get("enable_fl_filter", True)),
-            searchable_columns=data.get("searchable_columns", []),
-            view_columns=data.get("view_columns", []),
+            field_columns=field_columns,
+            key_column=data.get("key_column"),
         )
+
+    @staticmethod
+    def _legacy_field_columns(data: dict[str, Any]) -> list[dict[str, str | bool]]:
+        columns: dict[str, dict[str, str | bool]] = {}
+        for source, selection in (
+            (data.get("searchable_columns", []), "search"),
+            (data.get("view_columns", []), "export"),
+        ):
+            for column in source:
+                name = str(column.get("name", "")).strip()
+                if not name:
+                    continue
+                entry = columns.setdefault(
+                    name,
+                    {
+                        "name": name,
+                        "label": str(column.get("label", name)),
+                        "type": str(column.get("type", "varchar")),
+                        "input_type": str(column.get("input_type", "text field")),
+                        "position": len(columns),
+                    },
+                )
+                entry[selection] = True
+                if selection == "search":
+                    entry["use_distinct"] = bool(column.get("use_distinct", False))
+                    if column.get("filter_by"):
+                        entry["filter_by"] = str(column["filter_by"])
+        key_column = data.get("key_column")
+        if key_column and key_column in columns:
+            columns[str(key_column)]["key"] = True
+        return list(columns.values())
+
+    @property
+    def searchable_columns(self) -> list[dict[str, str | bool]]:
+        return [
+            self._runtime_column(column)
+            for column in self.field_columns
+            if bool(column.get("search", False))
+        ]
+
+    @property
+    def view_columns(self) -> list[dict[str, str]]:
+        return [
+            {
+                "name": str(column["name"]),
+                "label": str(column.get("label", column["name"])),
+                "type": str(column.get("type", "varchar")),
+                "input_type": str(column.get("input_type", "text field")),
+            }
+            for column in self.field_columns
+            if bool(column.get("export", False))
+        ]
+
+    @staticmethod
+    def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
+        return {
+            key: column[key]
+            for key in ("name", "label", "type", "input_type", "use_distinct", "filter_by")
+            if key in column
+        }
 
 
 class LayerConfigRepository:
@@ -76,6 +145,7 @@ class LayerConfigRepository:
         return self._load()
 
     def save(self, config: LayerConfig) -> None:
+        config = replace(config, svg_marker_path=portable_svg_reference(config.svg_marker_path))
         configs = self._load()
         replaced = False
         for i, cfg in enumerate(configs):
@@ -124,7 +194,7 @@ class LayerConfigRepository:
             return
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
-            [c.to_dict() for c in configs],
+            [config.to_dict() for config in configs],
             indent=2,
             ensure_ascii=False,
         )

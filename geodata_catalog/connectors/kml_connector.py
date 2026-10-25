@@ -20,7 +20,7 @@ class KmlConnector(BaseConnector):
         self._datasource_id = datasource_id
         self._config = config
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         path = self._resolve_path()
         sublayers = self._discover_sublayers(path)
         if not sublayers:
@@ -59,13 +59,17 @@ class KmlConnector(BaseConnector):
                 return layer
         raise LayerLoadException(f"KML layer '{layer_name}' not found.")
 
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
         metadata = self.get_layer_metadata(layer_name)
         layer = QgsVectorLayer(metadata.provider_uri, metadata.display_name, metadata.provider_key)
         if not layer.isValid():
             raise LayerLoadException(f"Invalid KML layer '{metadata.display_name}'.")
+        if layer.featureCount() == 0:
+            raise LayerLoadException(
+                f"Layer '{metadata.display_name}' is not loaded because it contains no data."
+            )
         return layer
 
     def test_connection(self) -> bool:

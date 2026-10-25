@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from geodata_catalog.logging_utils import PluginLogger
 
 try:
@@ -11,19 +13,23 @@ try:
         QgsProject,
         QgsRectangle,
     )
-    from qgis.gui import QgsMapToolIdentify
+    from qgis.gui import QgsMapToolEmitPoint, QgsMapToolIdentify, QgsRubberBand
     from qgis.PyQt.QtCore import QPoint, QSize, Qt
-    from qgis.PyQt.QtGui import QCursor, QIcon
+    from qgis.PyQt.QtGui import QColor, QCursor, QIcon
     from qgis.PyQt.QtWidgets import (
-        QAction,
         QDialog,
         QFrame,
         QGridLayout,
         QLabel,
+        QMenu,
         QScrollArea,
         QVBoxLayout,
         QWidget,
     )
+    try:
+        from qgis.PyQt.QtGui import QAction
+    except ImportError:
+        from qgis.PyQt.QtWidgets import QAction
 except ImportError:  # pragma: no cover
     QgsApplication = None
     QgsCoordinateTransform = None
@@ -32,9 +38,12 @@ except ImportError:  # pragma: no cover
     QgsProject = None
     QgsRectangle = None
     QgsMapToolIdentify = object
+    QgsMapToolEmitPoint = None
+    QgsRubberBand = None
     QPoint = None
     QSize = None
     Qt = None
+    QColor = None
     QCursor = None
     QIcon = None
     QAction = None
@@ -42,6 +51,7 @@ except ImportError:  # pragma: no cover
     QFrame = None
     QGridLayout = None
     QLabel = None
+    QMenu = None
     QScrollArea = None
     QVBoxLayout = None
     QWidget = None
@@ -70,11 +80,11 @@ class IdentifyResultsPopup(QDialog):
         self.setStyleSheet(
             "\n".join(
                 [
-                    "QDialog { background: #FFFFFF; }",
-                    "QFrame[identifyBlock='true'] { border: 1px solid #C9D5E6; border-radius: 6px; background: #FAFCFF; }",
-                    "QLabel[identifyHeader='true'] { color: #0F172A; font-weight: 700; padding: 4px 2px; }",
-                    "QLabel[identifyField='true'] { color: #475569; }",
-                    "QLabel[identifyValue='true'] { color: #0F172A; }",
+                    "QDialog { background: #F0F0F0; }",
+                    "QFrame[identifyBlock='true'] { border: 1px solid #B8B8B8; border-radius: 4px; background: #E7E7E7; }",
+                    "QLabel[identifyHeader='true'] { color: #202020; font-weight: 700; padding: 4px 2px; }",
+                    "QLabel[identifyField='true'] { color: #4A4A4A; }",
+                    "QLabel[identifyValue='true'] { color: #202020; }",
                 ]
             )
         )
@@ -139,7 +149,6 @@ class IdentifyMapTool(QgsMapToolIdentify):
 
     MAX_RESULTS = 10
     HIGHLIGHT_COLOR = (255, 0, 0)
-    HOVER_COLOR = (255, 140, 0)
 
     def __init__(self, canvas, parent_widget, logger: PluginLogger) -> None:
         super().__init__(canvas)
@@ -147,43 +156,23 @@ class IdentifyMapTool(QgsMapToolIdentify):
         self._logger = logger
         self._popup: IdentifyResultsPopup | None = None
         self._result_bands: list = []
-        self._hover_bands: list = []
-        self._last_hover_pos = None
         self.setCursor(QCursor(_enum(Qt, "CursorShape", "ArrowCursor")))
 
     def canvasReleaseEvent(self, event) -> None:
         pos = self._event_pos(event)
         hits = self._collect_hits(int(pos.x()), int(pos.y()))
 
-        self._clear_bands(self._hover_bands)
         self._clear_bands(self._result_bands)
         self._highlight(hits, self._result_bands, self.HIGHLIGHT_COLOR, 2)
 
         blocks = [self._hit_to_block(hit) for hit in hits] or [("No features found", [])]
         self._show_popup(blocks, event)
 
-    def canvasMoveEvent(self, event) -> None:
-        pos = self._event_pos(event)
-        if self._last_hover_pos is not None:
-            delta = abs(pos.x() - self._last_hover_pos[0]) + abs(pos.y() - self._last_hover_pos[1])
-            if delta < 4:
-                return
-        self._last_hover_pos = (pos.x(), pos.y())
-
-        hits = self._spatial_hits(int(pos.x()), int(pos.y()), limit=1)
-        self._clear_bands(self._hover_bands)
-        if hits:
-            self._highlight(hits, self._hover_bands, self.HOVER_COLOR, 2)
-            self.setCursor(QCursor(_enum(Qt, "CursorShape", "PointingHandCursor")))
-        else:
-            self.setCursor(QCursor(_enum(Qt, "CursorShape", "ArrowCursor")))
-
     def deactivate(self) -> None:
         self.clear_highlights()
         super().deactivate()
 
     def clear_highlights(self) -> None:
-        self._clear_bands(self._hover_bands)
         self._clear_bands(self._result_bands)
 
     def _collect_hits(self, x: int, y: int) -> list[dict]:
@@ -294,7 +283,7 @@ class IdentifyMapTool(QgsMapToolIdentify):
 
     def _highlight(self, hits: list[dict], bands: list, color: tuple[int, int, int], width: int) -> None:
         canvas = self.canvas()
-        if canvas is None or QgsRubberBand is None:
+        if canvas is None or QgsRubberBand is None or QColor is None:
             return
 
         for hit in hits:
@@ -393,13 +382,42 @@ class GeometryToolbar:
 
     OBJECT_NAME = "GeoDataCatalogGeometryToolbar"
     TITLE = "GeoData Geometry Toolbox"
-
-    def __init__(self, iface, logger: PluginLogger) -> None:
+    def __init__(
+        self,
+        iface,
+        logger: PluginLogger,
+        on_configuration_requested: Callable[[], None] | None = None,
+        on_loadable_layers_requested: Callable[[], None] | None = None,
+        on_focus_muac_requested: Callable[[], None] | None = None,
+        on_save_layer_view_requested: Callable[[], None] | None = None,
+        on_copy_layer_filter_requested: Callable[[], None] | None = None,
+        on_place_marker_requested: Callable[[], bool] | None = None,
+        on_hide_marker_requested: Callable[[], None] | None = None,
+        has_saved_marker: Callable[[], bool] | None = None,
+        on_marker_position_selected: Callable[[object], bool] | None = None,
+    ) -> None:
         self._iface = iface
         self._logger = logger
+        self._on_configuration_requested = on_configuration_requested
+        self._on_loadable_layers_requested = on_loadable_layers_requested
+        self._on_focus_muac_requested = on_focus_muac_requested
+        self._on_save_layer_view_requested = on_save_layer_view_requested
+        self._on_copy_layer_filter_requested = on_copy_layer_filter_requested
+        self._on_place_marker_requested = on_place_marker_requested
+        self._on_hide_marker_requested = on_hide_marker_requested
+        self._has_saved_marker = has_saved_marker
+        self._on_marker_position_selected = on_marker_position_selected
         self._toolbar = None
         self._identify_action: QAction | None = None
+        self._configuration_action: QAction | None = None
+        self._loadable_layers_action: QAction | None = None
+        self._focus_muac_action: QAction | None = None
+        self._save_layer_view_action: QAction | None = None
+        self._copy_layer_filter_action: QAction | None = None
+        self._place_marker_action: QAction | None = None
         self._identify_tool: IdentifyMapTool | None = None
+        self._marker_visible = False
+        self._marker_map_tool = None
         self._previous_map_tool = None
 
     def initGui(self) -> None:
@@ -435,12 +453,77 @@ class GeometryToolbar:
         self._identify_action.setToolTip("Identify features: click a feature on the map to see its attributes.")
         self._identify_action.toggled.connect(self._on_identify_toggled)
         self._toolbar.addAction(self._identify_action)
+        self._toolbar.addSeparator()
+
+        self._configuration_action = QAction(
+            self._configuration_icon(),
+            "Open data source configuration",
+            self._iface.mainWindow(),
+        )
+        self._configuration_action.setToolTip("Open data source configuration")
+        self._configuration_action.triggered.connect(self._emit_configuration_requested)
+        self._toolbar.addAction(self._configuration_action)
+
+        self._loadable_layers_action = QAction(
+            self._loadable_layers_icon(),
+            "Choose map layers",
+            self._iface.mainWindow(),
+        )
+        self._loadable_layers_action.setToolTip("Choose map layers")
+        self._loadable_layers_action.triggered.connect(self._emit_loadable_layers_requested)
+        self._toolbar.addAction(self._loadable_layers_action)
+
+        self._save_layer_view_action = QAction(
+            self._save_layer_view_icon(),
+            "Save layer view",
+            self._iface.mainWindow(),
+        )
+        self._save_layer_view_action.setToolTip("Save the current filter and grouping for a layer")
+        self._save_layer_view_action.triggered.connect(self._emit_save_layer_view_requested)
+        self._toolbar.addAction(self._save_layer_view_action)
+
+        self._copy_layer_filter_action = QAction(
+            self._copy_layer_filter_icon(),
+            "Apply filter to another layer",
+            self._iface.mainWindow(),
+        )
+        self._copy_layer_filter_action.setToolTip("Copy the current filter from one layer to another")
+        self._copy_layer_filter_action.triggered.connect(self._emit_copy_layer_filter_requested)
+        self._toolbar.addAction(self._copy_layer_filter_action)
+
+        self._focus_muac_action = QAction(
+            self._focus_muac_icon(),
+            "Focus MUAC",
+            self._iface.mainWindow(),
+        )
+        self._focus_muac_action.setToolTip("Focus map on the MUAC control area")
+        self._focus_muac_action.triggered.connect(self._emit_focus_muac_requested)
+        self._toolbar.addAction(self._focus_muac_action)
+
+        self._toolbar.addSeparator()
+
+        self._place_marker_action = QAction(
+            self._place_marker_icon(),
+            "Interactive Marker",
+            self._iface.mainWindow(),
+        )
+        self._place_marker_action.setCheckable(True)
+        self._place_marker_action.setToolTip(
+            "Show or hide the interactive marker. If not configured, click the map to set its position. "
+            "Right-click this button to change its position."
+        )
+        self._place_marker_action.toggled.connect(self._on_place_marker_toggled)
+        self._toolbar.addAction(self._place_marker_action)
+        marker_button = self._toolbar.widgetForAction(self._place_marker_action)
+        marker_button.setContextMenuPolicy(_enum(Qt, "ContextMenuPolicy", "CustomContextMenu"))
+        marker_button.customContextMenuRequested.connect(self._show_marker_context_menu)
 
         canvas = self._map_canvas()
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
 
     def unload(self) -> None:
+        self._deactivate_marker_mode()
         canvas = self._map_canvas()
         if canvas is not None:
             try:
@@ -458,6 +541,14 @@ class GeometryToolbar:
             self._toolbar.deleteLater()
             self._toolbar = None
         self._identify_action = None
+        self._configuration_action = None
+        self._loadable_layers_action = None
+        self._focus_muac_action = None
+        self._save_layer_view_action = None
+        self._copy_layer_filter_action = None
+        self._place_marker_action = None
+        self._marker_map_tool = None
+        self._marker_visible = False
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:
@@ -465,6 +556,68 @@ class GeometryToolbar:
             if not icon.isNull():
                 return icon
         return QIcon(":/images/themes/default/mActionIdentify.svg")
+
+    def _loadable_layers_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionAddLayer.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionAddLayer.svg")
+
+    def _configuration_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionOptions.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionOptions.svg")
+
+    def _focus_muac_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionZoomToLayer.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionZoomToArea.svg")
+
+    def _save_layer_view_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionFileSave.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionFileSave.svg")
+
+    def _copy_layer_filter_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionEditCopy.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionEditCopy.svg")
+
+    def _place_marker_icon(self) -> QIcon:
+        if QgsApplication is not None:
+            icon = QgsApplication.getThemeIcon("/mActionCapturePoint.svg")
+            if not icon.isNull():
+                return icon
+        return QIcon(":/images/themes/default/mActionCapturePoint.svg")
+
+    def _emit_loadable_layers_requested(self, _checked: bool = False) -> None:
+        if self._on_loadable_layers_requested is not None:
+            self._on_loadable_layers_requested()
+
+    def _emit_configuration_requested(self, _checked: bool = False) -> None:
+        if self._on_configuration_requested is not None:
+            self._on_configuration_requested()
+
+    def _emit_focus_muac_requested(self, _checked: bool = False) -> None:
+        if self._on_focus_muac_requested is not None:
+            self._on_focus_muac_requested()
+
+    def _emit_save_layer_view_requested(self, _checked: bool = False) -> None:
+        if self._on_save_layer_view_requested is not None:
+            self._on_save_layer_view_requested()
+
+    def _emit_copy_layer_filter_requested(self, _checked: bool = False) -> None:
+        if self._on_copy_layer_filter_requested is not None:
+            self._on_copy_layer_filter_requested()
 
     def _map_canvas(self):
         if self._iface is None:
@@ -488,9 +641,84 @@ class GeometryToolbar:
             self._identify_tool.setAction(self._identify_action)
         canvas.setMapTool(self._identify_tool)
 
-    def _on_map_tool_set(self, new_tool, _old_tool=None) -> None:
-        if self._identify_action is None:
+    def _on_place_marker_toggled(self, enabled: bool) -> None:
+        self._logger.info(f"Marker toolbar toggled: enabled={enabled} visible={self._marker_visible}")
+
+        if not enabled:
+            self._deactivate_marker_mode()
+            if self._marker_visible and self._on_hide_marker_requested is not None:
+                self._on_hide_marker_requested()
+            self._marker_visible = False
             return
-        is_active = self._identify_tool is not None and new_tool == self._identify_tool
-        if self._identify_action.isChecked() != is_active:
-            self._identify_action.setChecked(is_active)
+
+        if self._has_saved_marker is not None and not self._has_saved_marker():
+            self._activate_marker_mode()
+            return
+
+        self._logger.info("Marker toolbar toggle-on requested stored marker display.")
+        shown = False
+        if self._on_place_marker_requested is not None:
+            shown = bool(self._on_place_marker_requested())
+        self._logger.info(f"Stored marker display callback finished: shown={shown}.")
+        self._marker_visible = shown
+        self._sync_marker_action()
+
+    def _sync_marker_action(self) -> None:
+        if self._place_marker_action is not None:
+            blocked = self._place_marker_action.blockSignals(True)
+            self._place_marker_action.setChecked(self._marker_visible)
+            self._place_marker_action.blockSignals(blocked)
+
+    def _show_marker_context_menu(self, position) -> None:
+        button = self._toolbar.widgetForAction(self._place_marker_action)
+        menu = QMenu(button)
+        configured = self._has_saved_marker is not None and self._has_saved_marker()
+        action = menu.addAction("Change marker position..." if configured else "Set marker position...")
+        action.triggered.connect(self._activate_marker_mode)
+        execute = getattr(menu, "exec", None) or menu.exec_
+        execute(button.mapToGlobal(position))
+
+    def _activate_marker_mode(self, _checked: bool = False) -> None:
+        canvas = self._map_canvas()
+        if canvas is None or QgsMapToolEmitPoint is None or self._on_marker_position_selected is None:
+            self._logger.warning("Cannot set marker position: map tool or position callback unavailable.")
+            self._sync_marker_action()
+            return
+        if self._marker_map_tool is None:
+            self._marker_map_tool = QgsMapToolEmitPoint(canvas)
+            self._marker_map_tool.canvasClicked.connect(self._on_canvas_marker_clicked)
+        if canvas.mapTool() != self._marker_map_tool:
+            self._previous_map_tool = canvas.mapTool()
+            canvas.setMapTool(self._marker_map_tool)
+
+    def _deactivate_marker_mode(self) -> None:
+        canvas = self._map_canvas()
+        if canvas is not None and self._marker_map_tool is not None and canvas.mapTool() == self._marker_map_tool:
+            previous = self._previous_map_tool
+            self._previous_map_tool = None
+            if previous is not None:
+                canvas.setMapTool(previous)
+            else:
+                canvas.unsetMapTool(self._marker_map_tool)
+
+    def _on_canvas_marker_clicked(self, point, button) -> None:
+        if button == _enum(Qt, "MouseButton", "RightButton"):
+            self._deactivate_marker_mode()
+            self._sync_marker_action()
+            return
+        if button != _enum(Qt, "MouseButton", "LeftButton"):
+            return
+        if self._on_marker_position_selected is None or not self._on_marker_position_selected(point):
+            self._logger.warning("Could not save the interactive marker position; placement remains active.")
+            return
+        self._marker_visible = True
+        self._deactivate_marker_mode()
+        self._sync_marker_action()
+
+    def _on_map_tool_set(self, new_tool, _old_tool=None) -> None:
+        if self._marker_map_tool is not None and new_tool != self._marker_map_tool:
+            self._sync_marker_action()
+        if self._identify_action is not None:
+            is_active = self._identify_tool is not None and new_tool == self._identify_tool
+            if self._identify_action.isChecked() != is_active:
+                self._identify_action.setChecked(is_active)

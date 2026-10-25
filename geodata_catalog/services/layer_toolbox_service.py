@@ -18,6 +18,7 @@ try:
         QgsGeometry,
         QgsMapLayerType,
         QgsMarkerSymbol,
+        QgsPalLayerSettings,
         QgsPointXY,
         QgsProject,
         QgsRasterLayer,
@@ -26,6 +27,7 @@ try:
         QgsRuleBasedRenderer,
         QgsSvgMarkerSymbolLayer,
         QgsSymbol,
+        QgsVectorLayerSimpleLabeling,
         QgsVectorLayer,
         QgsWkbTypes,
     )
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover
     QgsGeometry = None
     QgsMapLayerType = None
     QgsMarkerSymbol = None
+    QgsPalLayerSettings = None
     QgsPointXY = None
     QgsProject = None
     QgsRasterLayer = None
@@ -50,6 +53,7 @@ except ImportError:  # pragma: no cover
     QgsRuleBasedRenderer = None
     QgsSvgMarkerSymbolLayer = None
     QgsSymbol = None
+    QgsVectorLayerSimpleLabeling = None
     QgsVectorLayer = None
     QgsWkbTypes = None
     QVariant = None
@@ -70,7 +74,7 @@ class LayerToolboxService:
     INTERACTIVE_MARKER_SETTINGS_KEY = "layer_toolbox/interactive_marker"
     BASEMAP_DEFAULT = "World Map"
     BASEMAP_SETTINGS_KEY = "layer_toolbox/selected_basemap"
-    MUAC_EXTENT_WGS84 = (2.0, 49.0, 9.5, 53.8)
+    MUAC_EXTENT_WGS84 = (1.0, 48.5, 11.5, 56.0)
     GROUPING_RULE_OPACITY = 0.6
 
     BASEMAPS: tuple[dict[str, str], ...] = (
@@ -127,19 +131,14 @@ class LayerToolboxService:
 
         helper_name = f"{layer.name()}{self.VERTEX_SUFFIX}"
         self._remove_helper_layer(layer.id(), "vertices")
-        helper = self._create_memory_layer("Point", helper_name, layer)
+        helper = self._extract_vertices_layer(layer, helper_name)
         if helper is None:
             return
 
         self._tag_helper_layer(helper, layer.id(), "vertices")
-        provider = helper.dataProvider()
-        features = self._build_vertex_features(layer)
-        if features:
-            provider.addFeatures(features)
-            helper.updateExtents()
         self._project.addMapLayer(helper)
         self._logger.info(
-            f"Vertex helper layer created for '{layer.name()}' with {len(features)} vertices."
+            f"Vertex helper layer created for '{layer.name()}' with {helper.featureCount()} vertices."
         )
 
     def set_polygon_vertices_visible(self, layer, visible: bool) -> None:
@@ -394,6 +393,17 @@ class LayerToolboxService:
             return True
         return self.set_basemap(self.preferred_basemap_name())
 
+    def ensure_default_basemap_for_empty_project(self) -> bool:
+        """Load the local World Map only when no map layers are currently shown."""
+        if self._project is None:
+            return False
+        try:
+            if self._project.mapLayers():
+                return True
+        except Exception:
+            return False
+        return self.set_basemap(self.default_basemap_name())
+
     def current_basemap_name(self) -> str:
         layer = self._find_existing_basemap_layer()
         if layer is None:
@@ -500,6 +510,103 @@ class LayerToolboxService:
         )
         return True
 
+    def apply_flight_level_preset_rules(
+        self,
+        layer,
+        presets: list[dict[str, int | str]],
+        lower_field: str = "fl_lower",
+        upper_field: str = "fl_upper",
+    ) -> bool:
+        """Apply renderer rules for configured flight-level preset ranges.
+
+        The rules are built directly from system configuration; no feature scan
+        is needed before rendering the layer. Bands outside every preset are
+        retained by a final ELSE rule.
+        """
+        if not self._is_vector_layer(layer):
+            self._logger.warning("Cannot apply FL preset rules: selected layer is not vector-based.")
+            return False
+        if QgsRuleBasedRenderer is None or QgsSymbol is None:
+            self._logger.warning("Cannot apply FL preset rules: QGIS renderer classes are unavailable.")
+            return False
+
+        resolved_lower = self._resolve_layer_field_name(layer, lower_field)
+        resolved_upper = self._resolve_layer_field_name(layer, upper_field)
+        if not resolved_lower or not resolved_upper:
+            self._logger.warning("Cannot apply FL preset rules: FL fields are missing on selected layer.")
+            return False
+
+        normalized_presets: list[tuple[str, int, int]] = []
+        for preset in presets:
+            try:
+                name = str(preset.get("name", "")).strip()
+                lower = int(preset.get("lower"))
+                upper = int(preset.get("upper"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if name and lower <= upper:
+                normalized_presets.append((name, lower, upper))
+        if not normalized_presets:
+            self._logger.warning("Cannot apply FL preset rules: no valid presets are configured.")
+            return False
+
+        base_symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if base_symbol is None:
+            self._logger.warning("Cannot apply FL preset rules: failed to create base symbol.")
+            return False
+
+        renderer = QgsRuleBasedRenderer(base_symbol)
+        root_rule = renderer.rootRule()
+        try:
+            for child in list(root_rule.children()):
+                root_rule.removeChild(child)
+        except Exception:
+            pass
+
+        escaped_lower = resolved_lower.replace('"', '""')
+        escaped_upper = resolved_upper.replace('"', '""')
+        for name, lower, upper in normalized_presets:
+            symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+            if symbol is None:
+                continue
+            symbol_color = self._color_for_group_key(name)
+            if symbol_color is not None:
+                symbol.setColor(symbol_color)
+            if hasattr(symbol, "setOpacity"):
+                symbol.setOpacity(self.GROUPING_RULE_OPACITY)
+
+            rule = QgsRuleBasedRenderer.Rule(symbol)
+            rule.setLabel(f"{name} ({lower}-{upper})")
+            rule.setFilterExpression(
+                f'"{escaped_lower}" >= {lower} AND "{escaped_upper}" <= {upper}'
+            )
+            root_rule.appendChild(rule)
+
+        other_symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if other_symbol is not None:
+            other_color = self._color_for_group_key("other-flight-levels")
+            if other_color is not None:
+                other_symbol.setColor(other_color)
+            if hasattr(other_symbol, "setOpacity"):
+                other_symbol.setOpacity(self.GROUPING_RULE_OPACITY)
+            other_rule = QgsRuleBasedRenderer.Rule(other_symbol)
+            other_rule.setLabel("Other Flight Levels")
+            other_rule.setIsElse(True)
+            root_rule.appendChild(other_rule)
+
+        layer.setRenderer(renderer)
+        if hasattr(layer, "setOpacity"):
+            try:
+                layer.setOpacity(self.GROUPING_RULE_OPACITY)
+            except Exception as exc:
+                self._logger.warning(f"Could not set grouping layer opacity: {exc}")
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
+        self._logger.info(
+            f"Applied FL preset rules on '{layer.name()}' with {len(normalized_presets)} preset(s)."
+        )
+        return True
+
     def apply_value_grouping_rules(self, layer, group_field: str) -> bool:
         """Apply a rule-based renderer with one rule per distinct value of *group_field*."""
         if not self._is_vector_layer(layer):
@@ -581,6 +688,7 @@ class LayerToolboxService:
         return True
 
     def add_interactive_svg_marker(self, point, iface, svg_path: str) -> bool:
+        self._logger.info(f"Interactive marker add requested with svg_path='{svg_path}'.")
         if self._project is None:
             self._logger.warning("Cannot add marker: QGIS project is unavailable.")
             return False
@@ -590,12 +698,15 @@ class LayerToolboxService:
 
         canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
         marker_layer = self._find_helper_layer("", self.INTERACTIVE_MARKER_KIND)
+        self._logger.info(f"Interactive marker existing layer found={marker_layer is not None}.")
 
         if marker_layer is None:
             marker_layer = self._create_interactive_marker_layer(canvas)
             if marker_layer is None:
                 return False
-            self._project.addMapLayer(marker_layer)
+            if not self._add_interactive_marker_layer(marker_layer):
+                return False
+            self._logger.info("Interactive marker layer created and added to the project.")
 
         feature = QgsFeature()
         feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(point.x(), point.y())))
@@ -606,7 +717,8 @@ class LayerToolboxService:
             return False
 
         self._clear_marker_features(marker_layer)
-        provider.addFeatures([feature])
+        added = provider.addFeatures([feature])
+        self._logger.info(f"Interactive marker feature add result={added}.")
         marker_layer.updateExtents()
         self._apply_interactive_marker_style(marker_layer, svg_path)
         self._save_interactive_marker(point, canvas)
@@ -617,29 +729,56 @@ class LayerToolboxService:
         self._logger.info("Interactive SVG marker added to map.")
         return True
 
+    def _add_interactive_marker_layer(self, marker_layer) -> bool:
+        if self._project is None:
+            return False
+        try:
+            self._logger.info("Adding interactive marker layer to project.")
+            self._project.addMapLayer(marker_layer, False)
+            root = self._project.layerTreeRoot() if hasattr(self._project, "layerTreeRoot") else None
+            if root is not None and hasattr(root, "insertLayer"):
+                root.insertLayer(0, marker_layer)
+                self._logger.info("Interactive marker layer inserted at top of layer tree.")
+            else:
+                self._project.addMapLayer(marker_layer)
+                self._logger.info("Interactive marker layer added via default project insertion.")
+            return True
+        except Exception as exc:
+            self._logger.warning(f"Failed to add interactive marker layer: {exc}")
+            return False
+
     def has_saved_interactive_marker(self) -> bool:
         marker_data = self._load_saved_interactive_marker_data()
         return marker_data is not None
 
     def restore_saved_interactive_marker(self, iface, svg_path: str) -> bool:
+        self._logger.info("Stored interactive marker restore requested.")
         marker_data = self._load_saved_interactive_marker_data()
         if marker_data is None:
+            self._logger.warning("No stored interactive marker data found.")
             return False
         if QgsPointXY is None:
+            self._logger.warning("Cannot restore stored interactive marker: QgsPointXY is unavailable.")
             return False
 
         point = self._point_from_saved_marker(marker_data, iface)
         if point is None:
+            self._logger.warning("Cannot restore stored interactive marker: stored marker point is invalid.")
             return False
         return self.add_interactive_svg_marker(point=point, iface=iface, svg_path=svg_path)
 
-    def reset_saved_interactive_marker(self, iface) -> bool:
+    def hide_interactive_marker(self, iface) -> bool:
+        self._logger.info("Interactive marker hide requested.")
         cleared = self._remove_interactive_marker_layer()
-        removed_setting = self._clear_saved_interactive_marker_data()
-
         canvas = getattr(iface, "mapCanvas", lambda: None)() if iface is not None else None
         if canvas is not None and hasattr(canvas, "refresh"):
             canvas.refresh()
+        return cleared
+
+    def reset_saved_interactive_marker(self, iface) -> bool:
+        self._logger.info("Interactive marker reset requested.")
+        cleared = self.hide_interactive_marker(iface)
+        removed_setting = self._clear_saved_interactive_marker_data()
         if cleared or removed_setting:
             self._logger.info("Interactive marker has been reset.")
             return True
@@ -712,6 +851,41 @@ class LayerToolboxService:
             self._logger.warning(f"Failed to create helper memory layer '{layer_name}'.")
             return None
         return layer
+
+    def _extract_vertices_layer(self, source_layer, layer_name: str):
+        """Run QGIS's native algorithm to keep helper attributes identical to the toolbox."""
+        try:
+            from processing import run as processing_run
+
+            result = processing_run(
+                "native:extractvertices",
+                {"INPUT": source_layer, "OUTPUT": "memory:"},
+            )
+            output_layer = result.get("OUTPUT")
+            if output_layer is None or not hasattr(output_layer, "isValid") or not output_layer.isValid():
+                self._logger.warning("QGIS Extract Vertices did not produce a valid output layer.")
+                return None
+            output_layer.setName(layer_name)
+            self._apply_vertex_labels(output_layer)
+            return output_layer
+        except Exception as exc:
+            self._logger.warning(f"Failed to extract vertices with QGIS: {exc}")
+            return None
+
+    def _apply_vertex_labels(self, layer) -> None:
+        if QgsPalLayerSettings is None or QgsVectorLayerSimpleLabeling is None:
+            return
+        if not hasattr(layer, "setLabeling") or not hasattr(layer, "setLabelsEnabled"):
+            return
+
+        settings = QgsPalLayerSettings()
+        settings.fieldName = "vertex_index"
+        settings.isExpression = False
+        settings.enabled = True
+        layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+        layer.setLabelsEnabled(True)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
 
     def _create_interactive_marker_layer(self, canvas):
         if QgsVectorLayer is None:

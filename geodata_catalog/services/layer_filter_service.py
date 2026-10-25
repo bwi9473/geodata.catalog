@@ -303,6 +303,10 @@ class LayerFilterService:
         # Remove "({fl_expression}) AND" anywhere (FL prepended)
         s = re.sub(r'\(' + pat + r'\)\s+AND\s+', "", s, flags=re.IGNORECASE).strip()
 
+        # Remove bare FL expression wrapped in its own parens when it is the entire string
+        if re.fullmatch(r'\s*\(' + pat + r'\)\s*', s, flags=re.IGNORECASE):
+            return ""
+
         # Remove bare FL expression when it is the entire remaining string
         if re.fullmatch(r'\s*(?:' + pat + r')\s*', s, flags=re.IGNORECASE):
             return ""

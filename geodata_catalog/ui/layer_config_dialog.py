@@ -1,37 +1,80 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
+from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.metadata.layer_config_repository import LayerConfig
+from geodata_catalog.services.style_service import (
+    generate_style_preview_icon,
+    generate_svg_preview_icon,
+    list_style_files,
+)
+from geodata_catalog.svg_markers import is_embedded_svg, portable_svg_reference
 
 try:
-    from qgis.PyQt.QtCore import Qt
+    from qgis.PyQt.QtCore import QSize
+except ImportError:  # pragma: no cover
+    QSize = None
+
+_SMALL_ICON_SIZE = QSize(16, 16) if QSize is not None else None
+
+try:
     from qgis.PyQt.QtWidgets import (
         QCheckBox,
         QComboBox,
         QDialog,
+        QDialogButtonBox,
+        QFileDialog,
         QFormLayout,
         QGroupBox,
+        QHeaderView,
         QHBoxLayout,
         QLabel,
         QLineEdit,
+        QMessageBox,
         QPushButton,
         QTableWidget,
         QTableWidgetItem,
+        QToolButton,
         QVBoxLayout,
     )
 except ImportError:  # pragma: no cover
-    Qt = None
     QCheckBox = None
     QComboBox = None
     QDialog = object
+    QDialogButtonBox = None
+    QFileDialog = None
     QFormLayout = None
     QGroupBox = None
+    QHeaderView = None
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
+    QMessageBox = None
     QPushButton = None
     QTableWidget = None
     QTableWidgetItem = None
+    QToolButton = None
     QVBoxLayout = None
+
+try:
+    from qgis.core import QgsApplication
+except ImportError:  # pragma: no cover
+    QgsApplication = None
+
+try:
+    from qgis.gui import QgsSvgSelectorWidget
+except ImportError:  # pragma: no cover
+    QgsSvgSelectorWidget = None
+
+
+def _enum(owner, scope: str, member: str):
+    """Resolve a Qt enum member for both QGIS 3 and QGIS 4 bindings."""
+    scoped = getattr(owner, scope, None)
+    if scoped is not None and hasattr(scoped, member):
+        return getattr(scoped, member)
+    return getattr(owner, member)
 
 
 class LayerConfigDialog(QDialog):
@@ -50,6 +93,8 @@ class LayerConfigDialog(QDialog):
         Technical layer name (used as the unique key).
     display_name:
         Human-readable layer name shown in the dialog title.
+    source_name:
+        Source identifier shown below the dialog title.
     existing_config:
         Pre-existing ``LayerConfig`` to pre-populate the controls, or ``None``
         for a blank/default state.
@@ -61,32 +106,47 @@ class LayerConfigDialog(QDialog):
         datasource_id: str = "",
         layer_name: str = "",
         display_name: str = "",
+        source_name: str = "",
         existing_config: LayerConfig | None = None,
+        available_fields: list[dict[str, str]] | None = None,
+        refresh_fields: Callable[[], list[dict[str, str]]] | None = None,
+        style_folder: str | Path | None = None,
     ) -> None:
         if QDialog is object:  # pragma: no cover
             raise RuntimeError("QGIS runtime is not available.")
         super().__init__(parent)
         self._datasource_id = datasource_id
         self._layer_name = layer_name
+        self._refresh_fields = refresh_fields
+        self._field_positions: dict[int, int] = {}
+        self._svg_marker_path = ""
+        self._style_folder = style_folder
+        self._qml_style_path = ""
         self.setWindowTitle("Layer Configuration")
         self.setModal(True)
-        self.resize(560, 400)
-        self._build_ui(display_name or layer_name)
+        self.resize(1100, 540)
+        self._build_ui(display_name or layer_name, source_name or layer_name)
         if existing_config is not None:
-            self._populate(existing_config)
+            self._populate(existing_config, available_fields or [])
+        else:
+            self._populate_field_columns(available_fields or [])
 
     # ------------------------------------------------------------------ #
     # UI construction                                                      #
     # ------------------------------------------------------------------ #
 
-    def _build_ui(self, display_name: str) -> None:
+    def _build_ui(self, display_name: str, source_name: str) -> None:
         layout = QVBoxLayout(self)
 
         title = QLabel(f"<b>{display_name}</b>")
         layout.addWidget(title)
+        source = QLabel(source_name)
+        source.setWordWrap(True)
+        source.setStyleSheet("color: #64748B; font-size: 11px; margin-bottom: 6px;")
+        layout.addWidget(source)
 
         # -- Label column --
-        label_group = QGroupBox("Label Column")
+        label_group = QGroupBox("Single label")
         label_form = QFormLayout(label_group)
         self._layername_edit = QLineEdit()
         self._layername_edit.setPlaceholderText(
@@ -98,69 +158,79 @@ class LayerConfigDialog(QDialog):
             "Category shown in catalog (leave empty to use Miscellaneous)"
         )
         self._category_label_edit.setClearButtonEnabled(True)
-        self._label_edit = QLineEdit()
-        self._label_edit.setPlaceholderText("e.g. ROUTE_NAME  (leave empty to disable)")
-        self._label_edit.setClearButtonEnabled(True)
         self._enable_fl_filter_check = QCheckBox("Enable Flight Level Filter")
         self._enable_fl_filter_check.setChecked(True)
         label_form.addRow("Layer name", self._layername_edit)
         label_form.addRow("Category", self._category_label_edit)
-        label_form.addRow("Field name", self._label_edit)
         label_form.addRow("", self._enable_fl_filter_check)
+
+        self._svg_marker_combo = QComboBox()
+        self._svg_marker_combo.setToolTip(
+            "SVG markers are embedded in the configuration so they also work on another computer."
+        )
+        self._svg_marker_combo.addItem("Simple marker (default)", "")
+        for name, path in self._aviation_svg_markers():
+            self._add_svg_marker_item(name, path)
+        self._svg_marker_combo.currentIndexChanged.connect(self._on_svg_marker_changed)
+        svg_browser_button = QToolButton()
+        svg_browser_button.setText("...")
+        svg_browser_button.setToolTip("Choose an SVG marker from the QGIS SVG browser")
+        svg_browser_button.clicked.connect(self._open_svg_browser)
+        svg_row = QHBoxLayout()
+        svg_row.addWidget(self._svg_marker_combo, 1)
+        svg_row.addWidget(svg_browser_button)
+        label_form.addRow("Point marker", svg_row)
+
+        self._qml_style_combo = QComboBox()
+        self._qml_style_combo.setIconSize(_SMALL_ICON_SIZE)
+        self._populate_qml_style_combo()
+        self._qml_style_combo.currentIndexChanged.connect(self._on_qml_style_changed)
+        qml_browse_button = QToolButton()
+        qml_browse_button.setText("...")
+        qml_browse_button.setToolTip("Choose a QML style file from disk")
+        qml_browse_button.clicked.connect(self._browse_qml_style)
+        qml_row = QHBoxLayout()
+        qml_row.addWidget(self._qml_style_combo, 1)
+        qml_row.addWidget(qml_browse_button)
+        label_form.addRow("Style (QML)", qml_row)
         layout.addWidget(label_group)
 
-        # -- Searchable columns --
-        search_group = QGroupBox("Searchable Columns")
-        search_layout = QVBoxLayout(search_group)
-
-        self._search_table = QTableWidget(0, 5)
-        self._search_table.setHorizontalHeaderLabels(
-            ["Field Name", "Display Label", "Data Type", "Use Distinct", "Filter By"]
+        fields_group = QGroupBox("Layer Attributes")
+        fields_layout = QVBoxLayout(fields_group)
+        self._fields_table = QTableWidget(0, 10)
+        self._fields_table.setHorizontalHeaderLabels(
+            [
+                "Field Name",
+                "Display Label",
+                "Data Type",
+                "Display As",
+                "Label Column",
+                "Search",
+                "Export",
+                "Key Column",
+                "Use Distinct",
+                "Filter By",
+            ]
         )
-        self._search_table.horizontalHeader().setStretchLastSection(True)
-        self._search_table.setColumnWidth(0, 150)
-        self._search_table.setColumnWidth(1, 130)
-        self._search_table.setColumnWidth(2, 90)
-        self._search_table.setColumnWidth(3, 80)
-        self._search_table.setColumnWidth(4, 120)
-        self._search_table.setMinimumHeight(140)
-        search_layout.addWidget(self._search_table)
+        self._fields_table.horizontalHeader().sectionClicked.connect(
+            self._on_attribute_header_clicked
+        )
+        self._fields_table.horizontalHeader().setStretchLastSection(False)
+        for column, width in enumerate([145, 145, 85, 110, 85, 60, 60, 85, 80, 120]):
+            self._fields_table.setColumnWidth(column, width)
+        self._fields_table.horizontalHeader().setSectionResizeMode(
+            9, _enum(QHeaderView, "ResizeMode", "Fixed")
+        )
+        self._fields_table.setMinimumHeight(250)
+        fields_layout.addWidget(self._fields_table)
 
-        tbl_buttons = QHBoxLayout()
-        add_btn = QPushButton("Add Row")
-        remove_btn = QPushButton("Remove Row")
-        add_btn.clicked.connect(self._add_search_row)
-        remove_btn.clicked.connect(self._remove_search_row)
-        tbl_buttons.addWidget(add_btn)
-        tbl_buttons.addWidget(remove_btn)
-        tbl_buttons.addStretch(1)
-        search_layout.addLayout(tbl_buttons)
-
-        layout.addWidget(search_group)
-
-        # -- Custom view columns --
-        view_group = QGroupBox("Custom View Columns")
-        view_layout = QVBoxLayout(view_group)
-
-        self._view_table = QTableWidget(0, 3)
-        self._view_table.setHorizontalHeaderLabels(["Field Name", "Display Label", "Data Type"])
-        self._view_table.horizontalHeader().setStretchLastSection(True)
-        self._view_table.setColumnWidth(0, 200)
-        self._view_table.setColumnWidth(1, 170)
-        self._view_table.setMinimumHeight(140)
-        view_layout.addWidget(self._view_table)
-
-        view_buttons = QHBoxLayout()
-        add_view_btn = QPushButton("Add Row")
-        remove_view_btn = QPushButton("Remove Row")
-        add_view_btn.clicked.connect(self._add_view_row)
-        remove_view_btn.clicked.connect(self._remove_view_row)
-        view_buttons.addWidget(add_view_btn)
-        view_buttons.addWidget(remove_view_btn)
-        view_buttons.addStretch(1)
-        view_layout.addLayout(view_buttons)
-
-        layout.addWidget(view_group)
+        field_buttons = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh Attributes")
+        refresh_btn.clicked.connect(self._on_refresh_fields)
+        field_buttons.addWidget(refresh_btn)
+        field_buttons.addStretch(1)
+        fields_layout.addLayout(field_buttons)
+        layout.addWidget(fields_group)
 
         # -- Buttons --
         btn_row = QHBoxLayout()
@@ -168,7 +238,7 @@ class LayerConfigDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         save_btn = QPushButton("Save")
         cancel_btn.clicked.connect(self.reject)
-        save_btn.clicked.connect(self.accept)
+        save_btn.clicked.connect(self._on_save)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
@@ -177,34 +247,32 @@ class LayerConfigDialog(QDialog):
     # Slot handlers                                                        #
     # ------------------------------------------------------------------ #
 
-    def _add_search_row(self) -> None:
-        row = self._search_table.rowCount()
-        self._search_table.insertRow(row)
-        self._set_type_combo_at_row(self._search_table, row, "varchar")
-        # Add checkbox widget for "Use Distinct" in column 3
-        checkbox = QCheckBox()
-        checkbox.setChecked(False)
-        self._search_table.setCellWidget(row, 3, checkbox)
-        # Add free-text field for "Filter By" in column 4
-        filter_by_edit = QLineEdit()
-        filter_by_edit.setPlaceholderText("parent field name (optional)")
-        filter_by_edit.setClearButtonEnabled(True)
-        self._search_table.setCellWidget(row, 4, filter_by_edit)
+    def _on_save(self) -> None:
+        try:
+            reference = portable_svg_reference(self._svg_marker_path)
+            if reference:
+                generate_svg_preview_icon(reference)
+        except ConfigurationException as exc:
+            QMessageBox.warning(self, "SVG marker", str(exc))
+            return
+        self._svg_marker_path = reference or ""
+        self.accept()
 
-    def _remove_search_row(self) -> None:
-        current = self._search_table.currentRow()
-        if current >= 0:
-            self._search_table.removeRow(current)
-
-    def _add_view_row(self) -> None:
-        row = self._view_table.rowCount()
-        self._view_table.insertRow(row)
-        self._set_type_combo_at_row(self._view_table, row, "varchar")
-
-    def _remove_view_row(self) -> None:
-        current = self._view_table.currentRow()
-        if current >= 0:
-            self._view_table.removeRow(current)
+    def _on_refresh_fields(self) -> None:
+        if self._refresh_fields is None:
+            return
+        yes_button = _enum(QMessageBox, "StandardButton", "Yes")
+        no_button = _enum(QMessageBox, "StandardButton", "No")
+        response = QMessageBox.warning(
+            self,
+            "Refresh Attributes",
+            "Refreshing attributes will clear the existing field configuration. Continue?",
+            yes_button | no_button,
+            no_button,
+        )
+        if response != yes_button:
+            return
+        self._populate_field_columns(self._refresh_fields())
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #
@@ -214,57 +282,17 @@ class LayerConfigDialog(QDialog):
         """Return the dialog state as a new :class:`LayerConfig`."""
         layername = self._layername_edit.text().strip() or None
         category_label = self._category_label_edit.text().strip() or None
-        label_col = self._label_edit.text().strip() or None
 
-        searchable_columns: list[dict[str, str | bool]] = []
-        for row in range(self._search_table.rowCount()):
-            name_item = self._search_table.item(row, 0)
-            label_item = self._search_table.item(row, 1)
-            name = name_item.text().strip() if name_item else ""
-            if not name:
-                continue
-            label = label_item.text().strip() if label_item else ""
-            type_combo = self._search_table.cellWidget(row, 2)
-            data_type = "varchar"
-            if type_combo is not None and hasattr(type_combo, "currentText"):
-                data_type = type_combo.currentText().strip().lower() or "varchar"
-            # Get "Use Distinct" checkbox value
-            use_distinct_widget = self._search_table.cellWidget(row, 3)
-            use_distinct = False
-            if use_distinct_widget is not None and hasattr(use_distinct_widget, "isChecked"):
-                use_distinct = use_distinct_widget.isChecked()
-            # Get "Filter By" value
-            filter_by_widget = self._search_table.cellWidget(row, 4)
-            filter_by = ""
-            if filter_by_widget is not None and hasattr(filter_by_widget, "text"):
-                filter_by = filter_by_widget.text().strip()
-            col_entry: dict[str, str | bool] = {
-                "name": name,
-                "label": label or name,
-                "type": data_type,
-                "use_distinct": use_distinct,
-            }
-            if filter_by:
-                col_entry["filter_by"] = filter_by
-            searchable_columns.append(col_entry)
-
-        view_columns: list[dict[str, str]] = []
-        for row in range(self._view_table.rowCount()):
-            name_item = self._view_table.item(row, 0)
-            label_item = self._view_table.item(row, 1)
-            name = name_item.text().strip() if name_item else ""
-            if not name:
-                continue
-            label = label_item.text().strip() if label_item else ""
-            type_combo = self._view_table.cellWidget(row, 2)
-            data_type = "varchar"
-            if type_combo is not None and hasattr(type_combo, "currentText"):
-                data_type = type_combo.currentText().strip().lower() or "varchar"
-            view_columns.append({
-                "name": name,
-                "label": label or name,
-                "type": data_type,
-            })
+        field_columns = self._field_columns_from_table()
+        label_col = next(
+            (
+                str(self._fields_table.item(row, 0).text()).strip()
+                for row in range(self._fields_table.rowCount())
+                if self._fields_table.cellWidget(row, 4).isChecked()
+            ),
+            None,
+        )
+        key_column = next((column["name"] for column in field_columns if column["key"]), None)
 
         return LayerConfig(
             datasource_id=self._datasource_id,
@@ -272,45 +300,315 @@ class LayerConfigDialog(QDialog):
             layername=layername,
             category_label=category_label,
             label_column=label_col,
+            svg_marker_path=portable_svg_reference(self._svg_marker_path),
+            qml_style_path=self._qml_style_path or None,
             enable_fl_filter=bool(self._enable_fl_filter_check.isChecked()),
-            searchable_columns=searchable_columns,
-            view_columns=view_columns,
+            field_columns=field_columns,
+            key_column=key_column,
         )
 
     # ------------------------------------------------------------------ #
     # Pre-populate                                                        #
     # ------------------------------------------------------------------ #
 
-    def _populate(self, config: LayerConfig) -> None:
+    def _populate(self, config: LayerConfig, available_fields: list[dict[str, str]]) -> None:
         self._layername_edit.setText(config.layername or "")
         self._category_label_edit.setText(config.category_label or "")
-        self._label_edit.setText(config.label_column or "")
+        self._set_svg_marker_path(config.svg_marker_path or "")
+        self._set_qml_style_path(config.qml_style_path or "")
         self._enable_fl_filter_check.setChecked(bool(config.enable_fl_filter))
-        self._search_table.setRowCount(0)
-        for col in config.searchable_columns:
-            row = self._search_table.rowCount()
-            self._search_table.insertRow(row)
-            self._search_table.setItem(row, 0, QTableWidgetItem(col.get("name", "")))
-            self._search_table.setItem(row, 1, QTableWidgetItem(col.get("label", "")))
-            self._set_type_combo_at_row(self._search_table, row, col.get("type", "varchar"))
-            # Restore "Use Distinct" checkbox value
-            checkbox = QCheckBox()
-            checkbox.setChecked(bool(col.get("use_distinct", False)))
-            self._search_table.setCellWidget(row, 3, checkbox)
-            # Restore "Filter By" value
-            filter_by_edit = QLineEdit()
-            filter_by_edit.setPlaceholderText("parent field name (optional)")
-            filter_by_edit.setClearButtonEnabled(True)
-            filter_by_edit.setText(col.get("filter_by", "") or "")
-            self._search_table.setCellWidget(row, 4, filter_by_edit)
+        field_columns = self._merge_field_columns(config.field_columns, available_fields)
+        self._populate_field_columns(field_columns, config.label_column)
 
-        self._view_table.setRowCount(0)
-        for col in config.view_columns:
-            row = self._view_table.rowCount()
-            self._view_table.insertRow(row)
-            self._view_table.setItem(row, 0, QTableWidgetItem(col.get("name", "")))
-            self._view_table.setItem(row, 1, QTableWidgetItem(col.get("label", "")))
-            self._set_type_combo_at_row(self._view_table, row, col.get("type", "varchar"))
+    @staticmethod
+    def _runtime_column(column: dict[str, str | bool]) -> dict[str, str | bool]:
+        runtime = {
+            key: column[key]
+            for key in ("name", "label", "type", "input_type", "use_distinct", "filter_by")
+            if key in column
+        }
+        return runtime
+
+    @staticmethod
+    def _merge_field_columns(
+        configured_columns: list[dict[str, str | bool]],
+        available_fields: list[dict[str, str]],
+    ) -> list[dict[str, str | bool]]:
+        configured_by_name = {
+            str(column.get("name", "")).casefold(): dict(column)
+            for column in configured_columns
+            if column.get("name")
+        }
+        merged: list[dict[str, str | bool]] = []
+        for position, field in enumerate(available_fields):
+            name = str(field.get("name", "")).strip()
+            if not name:
+                continue
+            column = configured_by_name.pop(name.casefold(), {})
+            merged.append({
+                "name": name,
+                "label": str(column.get("label", field.get("label", name))),
+                "type": str(column.get("type", field.get("type", "varchar"))),
+                "input_type": str(column.get("input_type", "text field")),
+                "position": position,
+                "search": bool(column.get("search", False)),
+                "export": bool(column.get("export", False)),
+                "key": bool(column.get("key", False)),
+                "use_distinct": bool(column.get("use_distinct", False)),
+                **({"filter_by": str(column["filter_by"])} if column.get("filter_by") else {}),
+            })
+        return merged or list(configured_by_name.values())
+
+    def _populate_field_columns(
+        self,
+        columns: list[dict[str, str | bool]],
+        label_column: str | None = None,
+    ) -> None:
+        field_names = []
+        seen_names: set[str] = set()
+        for field_column in columns:
+            field_name = str(field_column.get("name", "")).strip()
+            if field_name and field_name.casefold() not in seen_names:
+                field_names.append(field_name)
+                seen_names.add(field_name.casefold())
+        filter_by_width = max(
+            120,
+            max(
+                (self._fields_table.fontMetrics().horizontalAdvance(name) for name in field_names),
+                default=0,
+            ) + 45,
+        )
+        self._fields_table.setColumnWidth(9, filter_by_width)
+        ordered = sorted(
+            enumerate(columns),
+            key=lambda value: (
+                not any(bool(value[1].get(key, False)) for key in ("search", "export", "key")),
+                int(value[1].get("position", value[0])),
+            ),
+        )
+        self._fields_table.setRowCount(0)
+        self._field_positions = {}
+        for fallback_position, column in ordered:
+            row = self._fields_table.rowCount()
+            self._fields_table.insertRow(row)
+            name = str(column.get("name", ""))
+            name_item = QTableWidgetItem(name)
+            self._field_positions[row] = int(column.get("position", fallback_position))
+            self._fields_table.setItem(row, 0, name_item)
+            self._fields_table.setItem(row, 1, QTableWidgetItem(str(column.get("label", name))))
+            self._set_type_combo_at_row(self._fields_table, row, str(column.get("type", "varchar")))
+            self._set_input_type_combo_at_row(self._fields_table, row, str(column.get("input_type", "text field")))
+            for index, key in (
+                (4, "label_column"),
+                (5, "search"),
+                (6, "export"),
+                (7, "key"),
+                (8, "use_distinct"),
+            ):
+                checkbox = QCheckBox()
+                checkbox.setChecked(
+                    name.casefold() == str(label_column or "").casefold()
+                    if key == "label_column"
+                    else bool(column.get(key, False))
+                )
+                self._fields_table.setCellWidget(row, index, checkbox)
+                if key in ("label_column", "key"):
+                    checkbox.toggled.connect(
+                        lambda checked, current_row=row, current_column=index: self._on_exclusive_checkbox_toggled(
+                            current_column, current_row, checked
+                        )
+                    )
+            filter_by_combo = QComboBox()
+            filter_by_combo.addItem("")
+            filter_by_combo.addItems(field_names)
+            filter_by_combo.setCurrentText(str(column.get("filter_by", "") or ""))
+            self._fields_table.setCellWidget(row, 9, filter_by_combo)
+
+    def _on_exclusive_checkbox_toggled(
+        self,
+        selected_column: int,
+        selected_row: int,
+        checked: bool,
+    ) -> None:
+        if not checked:
+            return
+        for row in range(self._fields_table.rowCount()):
+            if row != selected_row:
+                self._fields_table.cellWidget(row, selected_column).setChecked(False)
+
+    def _on_attribute_header_clicked(self, column: int) -> None:
+        if column not in (4, 5, 6, 7, 8):
+            return
+        checkboxes = [
+            self._fields_table.cellWidget(row, column)
+            for row in range(self._fields_table.rowCount())
+        ]
+        checkboxes = [checkbox for checkbox in checkboxes if checkbox is not None]
+        if not checkboxes:
+            return
+        if column in (4, 7):
+            selected = next((checkbox for checkbox in checkboxes if checkbox.isChecked()), None)
+            for checkbox in checkboxes:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+            if selected is None:
+                checkboxes[0].setChecked(True)
+            return
+        checked = not all(checkbox.isChecked() for checkbox in checkboxes)
+        for checkbox in checkboxes:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
+
+    @classmethod
+    def _aviation_svg_markers(cls) -> list[tuple[str, str]]:
+        symbol_dir = Path(__file__).resolve().parent.parent / "resources" / "aviation_symbols"
+        return [
+            (
+                "Airport (QGIS transport)",
+                cls._qgis_svg_path("transport/transport_airport.svg", symbol_dir / "topo_airport.svg"),
+            ),
+            ("Radar", str(symbol_dir / "radar.svg")),
+            ("Waypoint", str(symbol_dir / "waypoint.svg")),
+            ("VOR/DME", str(symbol_dir / "vor_dme.svg")),
+            ("NDB", str(symbol_dir / "ndb.svg")),
+            ("Heliport", str(symbol_dir / "heliport.svg")),
+            ("Control tower", str(symbol_dir / "control_tower.svg")),
+        ]
+
+    @staticmethod
+    def _qgis_svg_path(relative_path: str, fallback_path: Path) -> str:
+        if QgsApplication is not None:
+            for svg_root in QgsApplication.svgPaths():
+                candidate = Path(svg_root) / relative_path
+                if candidate.is_file():
+                    return str(candidate)
+        return str(fallback_path)
+
+    def _on_svg_marker_changed(self, _index: int) -> None:
+        self._svg_marker_path = str(self._svg_marker_combo.currentData() or "")
+
+    def _add_svg_marker_item(self, name: str, svg_path: str) -> None:
+        reference = portable_svg_reference(svg_path)
+        icon = generate_svg_preview_icon(reference) if reference else None
+        if icon is None:
+            self._svg_marker_combo.addItem(name, reference or "")
+            return
+        self._svg_marker_combo.addItem(icon, name, reference)
+
+    def _set_svg_marker_path(self, svg_path: str) -> None:
+        try:
+            reference = portable_svg_reference(svg_path) or ""
+        except ConfigurationException as exc:
+            self._svg_marker_combo.addItem("Unavailable SVG (choose another marker)", svg_path)
+            self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
+            self._svg_marker_path = svg_path
+            QMessageBox.warning(self, "SVG marker", str(exc))
+            return
+        for index in range(self._svg_marker_combo.count()):
+            if self._svg_marker_combo.itemData(index) == reference:
+                self._svg_marker_combo.setCurrentIndex(index)
+                self._svg_marker_path = reference
+                return
+        if reference:
+            self._add_svg_marker_item("Custom SVG (embedded)", reference)
+            self._svg_marker_combo.setCurrentIndex(self._svg_marker_combo.count() - 1)
+        self._svg_marker_path = reference
+
+    def _populate_qml_style_combo(self) -> None:
+        self._qml_style_combo.blockSignals(True)
+        self._qml_style_combo.clear()
+        self._qml_style_combo.addItem("No style (default)", "")
+        for name, path in list_style_files(self._style_folder):
+            self._add_qml_style_item(name, path)
+        self._qml_style_combo.blockSignals(False)
+        self._qml_style_path = ""
+
+    def _add_qml_style_item(self, name: str, style_path: str) -> None:
+        icon = generate_style_preview_icon(style_path)
+        if icon is None:
+            self._qml_style_combo.addItem(name, style_path)
+            return
+        self._qml_style_combo.addItem(icon, name, style_path)
+
+    def _on_qml_style_changed(self, _index: int) -> None:
+        self._qml_style_path = str(self._qml_style_combo.currentData() or "")
+
+    def _set_qml_style_path(self, style_path: str) -> None:
+        for index in range(self._qml_style_combo.count()):
+            if self._qml_style_combo.itemData(index) == style_path:
+                self._qml_style_combo.setCurrentIndex(index)
+                self._qml_style_path = style_path
+                return
+        if style_path:
+            self._add_qml_style_item(Path(style_path).stem, style_path)
+            self._qml_style_combo.setCurrentIndex(self._qml_style_combo.count() - 1)
+        self._qml_style_path = style_path
+
+    def _browse_qml_style(self) -> None:
+        if QFileDialog is None:  # pragma: no cover
+            QMessageBox.warning(self, "Style (QML)", "The file browser is not available.")
+            return
+        start_dir = str(self._style_folder) if self._style_folder else ""
+        style_path, _filter = QFileDialog.getOpenFileName(
+            self, "Choose Style (QML)", start_dir, "QGIS Style Files (*.qml)"
+        )
+        if style_path:
+            self._set_qml_style_path(style_path)
+
+    def _open_svg_browser(self) -> None:
+        if QgsSvgSelectorWidget is None:
+            QMessageBox.warning(self, "SVG marker", "The QGIS SVG browser is not available.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose SVG Marker")
+        dialog.resize(620, 460)
+        layout = QVBoxLayout(dialog)
+        selector = QgsSvgSelectorWidget(dialog)
+        if self._svg_marker_path and not is_embedded_svg(self._svg_marker_path):
+            selector.setSvgPath(self._svg_marker_path)
+        selected_path = {"value": self._svg_marker_path}
+        selector.svgSelected.connect(lambda path: selected_path.__setitem__("value", str(path)))
+        layout.addWidget(selector)
+        buttons = QDialogButtonBox(
+            _enum(QDialogButtonBox, "StandardButton", "Ok")
+            | _enum(QDialogButtonBox, "StandardButton", "Cancel")
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        execute_dialog = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        accepted = _enum(QDialog, "DialogCode", "Accepted")
+        if execute_dialog() == accepted:
+            self._set_svg_marker_path(selected_path["value"])
+
+    def _field_columns_from_table(self) -> list[dict[str, str | bool]]:
+        columns: list[dict[str, str | bool]] = []
+        for row in range(self._fields_table.rowCount()):
+            name_item = self._fields_table.item(row, 0)
+            label_item = self._fields_table.item(row, 1)
+            name = name_item.text().strip() if name_item else ""
+            if not name:
+                continue
+            type_combo = self._fields_table.cellWidget(row, 2)
+            input_type_combo = self._fields_table.cellWidget(row, 3)
+            filter_by_combo = self._fields_table.cellWidget(row, 9)
+            entry: dict[str, str | bool] = {
+                "name": name,
+                "label": label_item.text().strip() if label_item and label_item.text().strip() else name,
+                "type": type_combo.currentText().strip().lower() if type_combo else "varchar",
+                "input_type": input_type_combo.currentText().strip().lower() if input_type_combo else "text field",
+                "search": bool(self._fields_table.cellWidget(row, 5).isChecked()),
+                "export": bool(self._fields_table.cellWidget(row, 6).isChecked()),
+                "key": bool(self._fields_table.cellWidget(row, 7).isChecked()),
+                "use_distinct": bool(self._fields_table.cellWidget(row, 8).isChecked()),
+                "position": self._field_positions.get(row, row),
+            }
+            if filter_by_combo and filter_by_combo.currentText().strip():
+                entry["filter_by"] = filter_by_combo.currentText().strip()
+            columns.append(entry)
+        return columns
 
     def _set_type_combo_at_row(self, table, row: int, value: str) -> None:
         combo = QComboBox()
@@ -320,3 +618,13 @@ class LayerConfigDialog(QDialog):
         idx = combo.findText(selected)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         table.setCellWidget(row, 2, combo)
+
+    def _set_input_type_combo_at_row(self, table, row: int, value: str) -> None:
+        combo = QComboBox()
+        combo.addItem("text field")
+        combo.addItem("checkbox")
+        combo.addItem("dropdown")
+        selected = (value or "text field").strip().lower()
+        idx = combo.findText(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        table.setCellWidget(row, 3, combo)

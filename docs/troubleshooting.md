@@ -90,6 +90,27 @@ Open the log and look for an `ERROR` line after clicking **Load Layer**. The err
 
 ---
 
+## Oracle Layers Load Slowly, Especially Over VPN
+
+Loading an Oracle layer now queries spatial metadata only for the selected
+`OWNER.OBJECT`, including when it is not yet in the catalog cache. The plugin
+does not calculate record counts or geometry statistics for other layers.
+It checks whether the selected table or view contains data with
+`SELECT 1 ... WHERE ROWNUM = 1`, rather than counting every row. QGIS then opens
+the selected layer and supplies its geometry type.
+
+Catalog listing and explicit discovery with statistics remain separate operations.
+Older plugin versions rediscovered all layers and calculated their statistics
+each time an Oracle layer was loaded, opening separate connections for those
+queries. This could be particularly slow over VPN.
+
+If loading remains slow after updating and reloading the plugin, compare the
+same layer on the office network and VPN. QGIS provider initialization, database
+view complexity, map rendering, and styles on network shares may still contribute.
+No fixed load-time improvement is guaranteed.
+
+---
+
 ## QGIS Layers Panel Menu Shows Only "Open Custom View…"
 
 **Symptom:** Right-clicking a layer in the QGIS **Layers panel** shows only the GeoData Catalog action and none of the normal QGIS items such as Rename, Remove, or Duplicate.

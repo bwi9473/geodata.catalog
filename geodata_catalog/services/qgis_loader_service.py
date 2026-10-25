@@ -12,6 +12,7 @@ try:
         QgsProject,
         QgsTextFormat,
         QgsVectorLayerSimpleLabeling,
+        QgsWkbTypes,
     )
 except ImportError:  # pragma: no cover
     QgsCoordinateReferenceSystem = None
@@ -19,10 +20,13 @@ except ImportError:  # pragma: no cover
     QgsProject = None
     QgsTextFormat = None
     QgsVectorLayerSimpleLabeling = None
+    QgsWkbTypes = None
 
 
 class QgisLoaderService:
     """Handles loading and registration of layers into QGIS project."""
+
+    POLYGON_OPACITY = 0.3
 
     def __init__(
         self,
@@ -34,14 +38,22 @@ class QgisLoaderService:
         self._logger = logger
         self._project = project or (QgsProject.instance() if QgsProject else None)
 
-    def load_layer(self, layer_definition: LayerDefinition, connector) -> object:
+    def load_layer(
+        self,
+        layer_definition: LayerDefinition,
+        connector,
+        apply_configured_style: bool = True,
+    ) -> object:
         self._logger.info(
             f"Loading layer '{layer_definition.display_name}' "
             f"(provider: {layer_definition.provider_key}, "
             f"uri: {layer_definition.provider_uri})"
         )
         try:
-            layer = connector.load_layer(layer_definition.layer_name)
+            layer = connector.load_layer(
+                layer_definition.layer_name,
+                key_column=layer_definition.metadata.get("key_column"),
+            )
         except Exception as exc:
             self._logger.error(
                 f"Connector failed to load layer '{layer_definition.display_name}': {exc}"
@@ -82,8 +94,11 @@ class QgisLoaderService:
                 )
         self._assign_crs(layer, layer_definition.default_crs)
         self._apply_filter(layer, layer_definition.filter_expression)
-        self._apply_labels(layer, layer_definition.label_column)
-        self._style_service.apply_default_style(layer, layer_definition.default_style_file)
+        if apply_configured_style:
+            self._apply_labels(layer, layer_definition.label_column)
+            self._style_service.apply_default_style(layer, layer_definition.default_style_file)
+            self._style_service.apply_svg_marker(layer, layer_definition.metadata.get("svg_marker_path"))
+            self._apply_polygon_opacity(layer)
         self._tag_layer_source(layer, layer_definition)
 
         if self._project is None:  # pragma: no cover
@@ -126,6 +141,15 @@ class QgisLoaderService:
             layer.triggerRepaint()
         self._logger.info(f"Applied label column '{label_column}' to layer '{layer.name()}'")
 
+    def _apply_polygon_opacity(self, layer) -> None:
+        if QgsWkbTypes is None or not hasattr(layer, "geometryType") or not hasattr(layer, "setOpacity"):
+            return
+        if layer.geometryType() != QgsWkbTypes.PolygonGeometry:
+            return
+        layer.setOpacity(self.POLYGON_OPACITY)
+        if hasattr(layer, "triggerRepaint"):
+            layer.triggerRepaint()
+
     def _tag_layer_source(self, layer, layer_definition) -> None:
         """Store source identifiers as custom properties so the toolbox can look up layer config."""
         if not hasattr(layer, "setCustomProperty"):
@@ -133,5 +157,8 @@ class QgisLoaderService:
         try:
             layer.setCustomProperty("geodata_catalog/datasource_id", layer_definition.datasource_id)
             layer.setCustomProperty("geodata_catalog/source_layer_name", layer_definition.layer_name)
+            layer.setCustomProperty(
+                "geodata_catalog/key_column", layer_definition.metadata.get("key_column")
+            )
         except Exception as exc:
             self._logger.warning(f"Could not tag layer source properties: {exc}")

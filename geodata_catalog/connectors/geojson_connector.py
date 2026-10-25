@@ -21,7 +21,7 @@ class GeoJsonConnector(BaseConnector):
         self._datasource_id = datasource_id
         self._config = config
 
-    def get_layers(self) -> list[LayerDefinition]:
+    def get_layers(self, include_stats: bool = True) -> list[LayerDefinition]:
         layers: list[LayerDefinition] = []
         for file_path in self._resolve_paths():
             payload = self._load_and_validate_geojson(file_path)
@@ -51,10 +51,11 @@ class GeoJsonConnector(BaseConnector):
                 return layer
         raise LayerLoadException(f"GeoJSON layer '{layer_name}' not found.")
 
-    def load_layer(self, layer_name: str):
+    def load_layer(self, layer_name: str, key_column: str | None = None):
         if QgsVectorLayer is None:
             raise LayerLoadException("QGIS runtime is not available.")
         metadata = self.get_layer_metadata(layer_name)
+        self._raise_if_empty_layer(metadata)
         layer = QgsVectorLayer(metadata.provider_uri, metadata.display_name, metadata.provider_key)
         if not layer.isValid():
             raise LayerLoadException(f"Invalid GeoJSON file for '{metadata.display_name}'.")

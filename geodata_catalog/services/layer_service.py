@@ -23,17 +23,34 @@ class LayerService:
         self._logger = logger
         self._layer_config_repository = layer_config_repository
 
-    def discover_layers(self, datasource: Datasource) -> list[LayerDefinition]:
+    def discover_layers(
+        self, datasource: Datasource, include_stats: bool = True
+    ) -> list[LayerDefinition]:
         connector = self._datasource_service.get_connector(datasource)
-        discovered = connector.get_layers()
+        discovered = connector.get_layers(include_stats=include_stats)
+        merged = self._merge_configuration(datasource.id, discovered)
+        self._logger.info(
+            f"Discovered {len(merged)} layers for datasource '{datasource.name}'."
+        )
+        return merged
+
+    def get_layer(self, datasource: Datasource, layer_name: str) -> LayerDefinition:
+        """Resolve one layer and apply the same configuration as catalog discovery."""
+        connector = self._datasource_service.get_connector(datasource)
+        layer = connector.get_layer_metadata(layer_name)
+        return self._merge_configuration(datasource.id, [layer])[0]
+
+    def _merge_configuration(
+        self, datasource_id: str, discovered: list[LayerDefinition]
+    ) -> list[LayerDefinition]:
         configured = {
             layer.layer_name: layer
-            for layer in self._layer_repository.list_by_datasource(datasource.id)
+            for layer in self._layer_repository.list_by_datasource(datasource_id)
         }
         layer_configs = (
             {
                 cfg.layer_name: cfg
-                for cfg in self._layer_config_repository.list_by_datasource(datasource.id)
+                for cfg in self._layer_config_repository.list_by_datasource(datasource_id)
             }
             if self._layer_config_repository is not None
             else {}
@@ -50,6 +67,7 @@ class LayerService:
                 layer.default_style_file = (
                     configured_layer.default_style_file or layer.default_style_file
                 )
+                layer.geometry_type = layer.geometry_type or configured_layer.geometry_type
                 layer.metadata = {**layer.metadata, **configured_layer.metadata}
 
             # Merge per-layer display/search config (label_column, searchable_columns)
@@ -61,17 +79,16 @@ class LayerService:
                     layer.business_group = layer_config.category_label
                 if layer_config.label_column is not None:
                     layer.label_column = layer_config.label_column
+                layer.metadata["svg_marker_path"] = layer_config.svg_marker_path
+                if layer_config.qml_style_path:
+                    layer.default_style_file = layer_config.qml_style_path
                 layer.metadata["enable_fl_filter"] = bool(layer_config.enable_fl_filter)
-                if layer_config.searchable_columns:
-                    layer.searchable_columns = layer_config.searchable_columns
-                if layer_config.view_columns:
-                    layer.metadata["view_columns"] = layer_config.view_columns
+                layer.searchable_columns = layer_config.searchable_columns
+                layer.metadata["view_columns"] = layer_config.view_columns
+                layer.metadata["key_column"] = layer_config.key_column
 
             merged.append(layer)
 
-        self._logger.info(
-            f"Discovered {len(merged)} layers for datasource '{datasource.name}'."
-        )
         return merged
 
     def save_layer_configuration(self, layer: LayerDefinition) -> None:

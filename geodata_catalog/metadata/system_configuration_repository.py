@@ -11,6 +11,23 @@ DEFAULT_FLIGHT_LEVEL_PRESETS: list[dict[str, int | str]] = [
 ]
 
 DEFAULT_UI_COLORS: dict[str, str] = {
+    "primary": "#3B82B6",
+    "primary_text": "#FFFFFF",
+    "panel_background": "#E7E7E7",
+    "window_background": "#F0F0F0",
+    "text": "#2B2B2B",
+    "border": "#B8B8B8",
+    "header_background": "#D9D9D9",
+    "header_text": "#202020",
+    "hover_background": "#F3F9F4",
+    "category_text": "#2E7D32",
+    "dataset_text": "#2B2B2B",
+    "preset_text": "#607D8B",
+    "selection_background": "#CFE8D1",
+    "selection_text": "#172A1B",
+}
+
+LEGACY_UI_COLORS: dict[str, str] = {
     "primary": "#59A947",
     "primary_text": "#FFFFFF",
     "panel_background": "#F7F9FC",
@@ -19,6 +36,12 @@ DEFAULT_UI_COLORS: dict[str, str] = {
     "border": "#D7DEE8",
     "header_background": "#EEF3FA",
     "header_text": "#0F172A",
+    "hover_background": "#F8FBFF",
+    "category_text": "#2E7D32",
+    "dataset_text": "#2B2B2B",
+    "preset_text": "#607D8B",
+    "selection_background": "#D9EAF7",
+    "selection_text": "#1E293B",
 }
 
 
@@ -132,5 +155,5 @@ class SystemConfigurationRepository:
             if len(candidate) == 7 and candidate.startswith("#"):
                 hex_part = candidate[1:]
                 if all(ch in "0123456789abcdefABCDEF" for ch in hex_part):
-                    normalized[key] = candidate
+                    normalized[key] = DEFAULT_UI_COLORS[key] if candidate.casefold() == LEGACY_UI_COLORS[key].casefold() else candidate
         return normalized

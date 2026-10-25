@@ -284,6 +284,19 @@ def test_reset_saved_interactive_marker_clears_settings_when_present():
     assert settings.get_json("layer_toolbox/interactive_marker", None) is None
 
 
+def test_hide_interactive_marker_removes_layer_but_keeps_saved_position():
+    payload = {"x": 4.2, "y": 50.7, "crs": "EPSG:4326"}
+    settings = _FakeSettingsManager({"layer_toolbox/interactive_marker": payload})
+    marker = _FakeRasterLayer("", "Interactive marker", "memory")
+    project = _FakeProject(marker)
+    service = LayerToolboxService(logger=_FakeLogger(), project=project, settings_manager=settings)
+    marker.setCustomProperty(service.HELPER_KIND_PROPERTY, service.INTERACTIVE_MARKER_KIND)
+
+    assert service.hide_interactive_marker(iface=None) is True
+    assert marker.id() in project.remove_calls
+    assert settings.get_json("layer_toolbox/interactive_marker", None) == payload
+
+
 def test_extract_flight_level_ranges_collects_unique_sorted_ranges():
     features = [
         _FakeFeature({"fl_lower": 355, "fl_upper": 999}, fid=1),
@@ -344,3 +357,42 @@ def test_vertex_source_layer_accepts_polygon_and_linestring(monkeypatch):
     assert service._is_vertex_source_layer(polygon_layer) is True
     assert service._is_vertex_source_layer(line_layer) is True
     assert service._is_vertex_source_layer(point_layer) is False
+
+
+def test_apply_vertex_labels_uses_vertex_index_by_default(monkeypatch):
+    class _FakePalLayerSettings:
+        def __init__(self):
+            self.fieldName = None
+            self.isExpression = None
+            self.enabled = None
+
+    class _FakeSimpleLabeling:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class _FakeLayer:
+        def __init__(self):
+            self.labeling = None
+            self.labels_enabled = False
+            self.repaint_calls = 0
+
+        def setLabeling(self, labeling):
+            self.labeling = labeling
+
+        def setLabelsEnabled(self, enabled):
+            self.labels_enabled = enabled
+
+        def triggerRepaint(self):
+            self.repaint_calls += 1
+
+    monkeypatch.setattr(layer_toolbox_module, "QgsPalLayerSettings", _FakePalLayerSettings)
+    monkeypatch.setattr(layer_toolbox_module, "QgsVectorLayerSimpleLabeling", _FakeSimpleLabeling)
+    layer = _FakeLayer()
+
+    LayerToolboxService(logger=_FakeLogger(), project=None)._apply_vertex_labels(layer)
+
+    assert layer.labeling.settings.fieldName == "vertex_index"
+    assert layer.labeling.settings.isExpression is False
+    assert layer.labeling.settings.enabled is True
+    assert layer.labels_enabled is True
+    assert layer.repaint_calls == 1
