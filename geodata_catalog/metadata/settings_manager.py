@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -38,33 +39,57 @@ class SettingsManager:
             raise ConfigurationException("QSettings is not available outside QGIS runtime.")
 
         self._file_store = self._load_file_store()
+        for key in ("datasources", "layers"):
+            if key in self._file_store or self._settings.value(self._key(key), None) is not None:
+                self.set_json(key, self.get_json(key, []))
 
     def _key(self, key: str) -> str:
         return f"{self._namespace}/{key}"
 
     def set_json(self, key: str, value: Any) -> None:
+        value = self._without_database_secrets(key, value)
         self._file_store[key] = value
         self._persist_file_store()
         self._settings.setValue(self._key(key), json.dumps(value))
 
     def get_json(self, key: str, default: Any) -> Any:
         if key in self._file_store:
-            return self._file_store.get(key, default)
+            return self._without_database_secrets(key, self._file_store.get(key, default))
 
         raw = self._settings.value(self._key(key), None)
         if raw in (None, ""):
             return default
         if isinstance(raw, (dict, list)):
+            raw = self._without_database_secrets(key, raw)
             self._file_store[key] = raw
             self._persist_file_store()
             return raw
         try:
             parsed = json.loads(raw)
+            parsed = self._without_database_secrets(key, parsed)
             self._file_store[key] = parsed
             self._persist_file_store()
             return parsed
         except (TypeError, ValueError) as exc:
             raise ConfigurationException(f"Invalid settings payload for key '{key}'.") from exc
+
+    @staticmethod
+    def _without_database_secrets(key: str, value: Any) -> Any:
+        if key not in ("datasources", "layers") or not isinstance(value, list):
+            return value
+        result = deepcopy(value)
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            if key == "datasources" and item.get("datasource_type") == "oracle":
+                config = item.get("config", {})
+                if isinstance(config, dict):
+                    config.pop("password", None)
+                    config.pop("authcfg", None)
+            elif key == "layers" and item.get("provider_key") == "oracle":
+                # Oracle URIs are always rebuilt from the authenticated endpoint.
+                item["provider_uri"] = ""
+        return result
 
     def remove(self, key: str) -> None:
         self._file_store.pop(key, None)

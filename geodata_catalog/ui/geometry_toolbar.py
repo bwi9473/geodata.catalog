@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from geodata_catalog.logging_utils import PluginLogger
 
@@ -66,6 +67,13 @@ def _enum(owner, scope: str, member: str):
     if scoped is not None and hasattr(scoped, member):
         return getattr(scoped, member)
     return getattr(owner, member)
+
+
+def contrasting_text_color(color: str) -> str:
+    channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+    luminance = sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+    return "#202020" if luminance > 0.179 else "#FFFFFF"
 
 
 class IdentifyResultsPopup(QDialog):
@@ -395,6 +403,8 @@ class GeometryToolbar:
         on_hide_marker_requested: Callable[[], None] | None = None,
         has_saved_marker: Callable[[], bool] | None = None,
         on_marker_position_selected: Callable[[object], bool] | None = None,
+        on_connect_requested: Callable[[], None] | None = None,
+        on_disconnect_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._iface = iface
         self._logger = logger
@@ -407,6 +417,11 @@ class GeometryToolbar:
         self._on_hide_marker_requested = on_hide_marker_requested
         self._has_saved_marker = has_saved_marker
         self._on_marker_position_selected = on_marker_position_selected
+        self._on_connect_requested = on_connect_requested
+        self._on_disconnect_requested = on_disconnect_requested
+        self._connect_action = None
+        self._disconnect_action = None
+        self._connection_label = None
         self._toolbar = None
         self._identify_action: QAction | None = None
         self._configuration_action: QAction | None = None
@@ -443,6 +458,29 @@ class GeometryToolbar:
         brand.setToolTip("GeoData Catalog geometry tools")
         self._toolbar.addWidget(brand)
         self._toolbar.addSeparator()
+        self._connect_action = QAction(
+            QIcon(str(Path(__file__).resolve().parent.parent / "resources" / "database_connect.svg")),
+            "Connect to database",
+            self._iface.mainWindow(),
+        )
+        self._disconnect_action = QAction(
+            QIcon(str(Path(__file__).resolve().parent.parent / "resources" / "database_disconnect.svg")),
+            "Disconnect database",
+            self._iface.mainWindow(),
+        )
+        self._connect_action.triggered.connect(
+            lambda: self._on_connect_requested() if self._on_connect_requested else None
+        )
+        self._disconnect_action.triggered.connect(
+            lambda: self._on_disconnect_requested() if self._on_disconnect_requested else None
+        )
+        self._toolbar.addAction(self._connect_action)
+        self._toolbar.addAction(self._disconnect_action)
+        self._connection_label = QLabel(self._toolbar)
+        self._connection_label.setTextFormat(_enum(Qt, "TextFormat", "PlainText"))
+        self._toolbar.addWidget(self._connection_label)
+        self._toolbar.addSeparator()
+        self.set_database_connection()
 
         self._identify_action = QAction(
             self._identify_icon(),
@@ -522,6 +560,20 @@ class GeometryToolbar:
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
 
+    def set_database_connection(self, label: str = "", color: str = "#F8FBFF", tooltip: str = "") -> None:
+        if self._toolbar is None or self._connection_label is None:
+            return
+        background = QColor(color)
+        foreground = contrasting_text_color(background.name())
+        self._toolbar.setStyleSheet(
+            f"QToolBar#{self.OBJECT_NAME} {{ background: {background.name()}; padding: 1px 3px; spacing: 2px; }}"
+            f"QToolBar#{self.OBJECT_NAME} QLabel {{ color: {foreground}; padding: 2px 6px; font-weight: 600; }}"
+        )
+        self._connection_label.setText(label or "Database disconnected")
+        self._connection_label.setToolTip(tooltip or "Use Connect to log in to a configured database.")
+        self._connect_action.setEnabled(not bool(label))
+        self._disconnect_action.setEnabled(bool(label))
+
     def unload(self) -> None:
         self._deactivate_marker_mode()
         canvas = self._map_canvas()
@@ -549,6 +601,9 @@ class GeometryToolbar:
         self._place_marker_action = None
         self._marker_map_tool = None
         self._marker_visible = False
+        self._connect_action = None
+        self._disconnect_action = None
+        self._connection_label = None
 
     def _identify_icon(self) -> QIcon:
         if QgsApplication is not None:

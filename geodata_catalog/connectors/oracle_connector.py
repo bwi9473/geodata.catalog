@@ -261,13 +261,17 @@ class OracleConnector(BaseConnector):
         if QgsDataSourceUri is None:
             return ""
         uri = QgsDataSourceUri()
+        auth_id = self._config.get("authcfg")
+        if not auth_id:
+            raise DatasourceConnectionException("Log in before creating an Oracle layer.")
         uri.setConnection(
             self._config.get("host", ""),
             str(self._config.get("port", 1521)),
             self._config.get("service_name", ""),
-            self._config.get("username", ""),
-            self._config.get("password", ""),
+            "",
+            "",
         )
+        uri.setAuthConfigId(auth_id)
         uri.setDataSource(
             owner,
             object_name,
@@ -281,16 +285,30 @@ class OracleConnector(BaseConnector):
         if oracledb is None:
             raise DatasourceConnectionException("python-oracledb is not installed.")
         try:
+            username = self._config.get("username", "")
+            password = self._config.get("password", "")
+            if self._config.get("authcfg"):
+                from qgis.core import QgsApplication, QgsAuthMethodConfig
+
+                auth = QgsAuthMethodConfig()
+                if not QgsApplication.authManager().loadAuthenticationConfig(
+                    self._config["authcfg"], auth, True
+                ):
+                    raise DatasourceConnectionException("Database session is no longer available. Reconnect.")
+                username = auth.config("username")
+                password = auth.config("password")
             dsn = oracledb.makedsn(
                 self._config["host"],
                 int(self._config.get("port", 1521)),
                 service_name=self._config["service_name"],
             )
             return oracledb.connect(
-                user=self._config["username"],
-                password=self._config["password"],
+                user=username,
+                password=password,
                 dsn=dsn,
             )
+        except DatasourceConnectionException:
+            raise
         except Exception as exc:  # pragma: no cover
             raise DatasourceConnectionException("Failed to connect to Oracle datasource.") from exc
 

@@ -46,8 +46,7 @@ class QgisLoaderService:
     ) -> object:
         self._logger.info(
             f"Loading layer '{layer_definition.display_name}' "
-            f"(provider: {layer_definition.provider_key}, "
-            f"uri: {layer_definition.provider_uri})"
+            f"(provider: {layer_definition.provider_key})"
         )
         try:
             layer = connector.load_layer(

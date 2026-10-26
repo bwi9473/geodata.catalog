@@ -18,6 +18,7 @@ from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.models.saved_layer_view import SavedLayerView
 from geodata_catalog.services.datasource_service import DatasourceService
+from geodata_catalog.services.database_session_service import DatabaseSessionService, QgisSessionAuthentication
 from geodata_catalog.services.layer_filter_service import (
     AttributeSearchFilter,
     FlightLevelFilter,
@@ -31,7 +32,7 @@ from geodata_catalog.services.style_service import StyleService
 from geodata_catalog.ui.catalog_dockwidget import CatalogDockWidget
 from geodata_catalog.ui.copy_layer_filter_dialog import CopyLayerFilterDialog
 from geodata_catalog.ui.datasource_dialog import DatasourceDialog
-from geodata_catalog.ui.geometry_toolbar import GeometryToolbar
+from geodata_catalog.ui.geometry_toolbar import GeometryToolbar, contrasting_text_color
 from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
 from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
@@ -39,7 +40,12 @@ from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
 
 from qgis.PyQt.QtCore import Qt, QVariant
 from qgis.PyQt.QtXml import QDomDocument
-from qgis.PyQt.QtWidgets import QAction, QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox
+from qgis.PyQt.QtWidgets import QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox
+
+try:
+    from qgis.PyQt.QtGui import QAction
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction
 
 try:
     from qgis.core import (
@@ -89,6 +95,9 @@ class GeoDataCatalogPlugin:
         self._layer_config_repository = LayerConfigRepository(layer_config_path)
 
         self._datasource_service = DatasourceService(datasource_repository, self._logger)
+        self._database_session = DatabaseSessionService(QgisSessionAuthentication(settings_manager))
+        self._datasource_service.database_session = self._database_session
+        self._unloading = False
         self._layer_service = LayerService(
             self._datasource_service,
             layer_repository,
@@ -123,6 +132,8 @@ class GeoDataCatalogPlugin:
             on_hide_marker_requested=self._on_hide_marker_requested,
             has_saved_marker=self._layer_toolbox_service.has_saved_interactive_marker,
             on_marker_position_selected=self._on_marker_position_selected,
+            on_connect_requested=self._connect_database,
+            on_disconnect_requested=self._disconnect_database,
         )
 
     def initGui(self) -> None:
@@ -132,6 +143,7 @@ class GeoDataCatalogPlugin:
             self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
 
             self._geometry_toolbar.initGui()
+            QgsProject.instance().readProject.connect(self._on_database_project_read)
             self._ensure_layer_panel_filter_action()
             self._logger.info("GeoData Catalog initialized")
         except Exception as exc:
@@ -139,6 +151,19 @@ class GeoDataCatalogPlugin:
             raise
 
     def unload(self) -> None:
+        self._unloading = True
+        QgsProject.instance().readProject.disconnect(self._on_database_project_read)
+        try:
+            if not self._disconnect_database():
+                self._database_session.disconnect()
+                self._show_error(
+                    "Database layers retained",
+                    "The catalog login was removed, but database layers were kept to avoid losing work. "
+                    "Their provider connections may remain active until you remove the layers or close the project.",
+                )
+        except GeoDataCatalogException as exc:
+            self._logger.error(f"Database session cleanup failed: {exc}")
+            self._show_error("Disconnect database", str(exc))
         self._geometry_toolbar.unload()
 
         if self._dock_widget is not None:
@@ -156,6 +181,149 @@ class GeoDataCatalogPlugin:
             self._open_catalog_action = None
 
         self._logger.info("GeoData Catalog unloaded")
+
+    def _connect_database(self) -> None:
+        from geodata_catalog.ui.database_login_dialog import DatabaseLoginDialog
+
+        if self._database_session.datasource is not None:
+            return
+        datasources = [
+            source for source in self._datasource_service.list_datasources()
+            if source.enabled and source.datasource_type is DatasourceType.ORACLE
+        ]
+        if not datasources:
+            QMessageBox.information(self.iface.mainWindow(), "Connect", "Configure an enabled Oracle datasource first.")
+            return
+        try:
+            self._database_session.initialize()
+        except GeoDataCatalogException as exc:
+            self._show_error("Database session cleanup", str(exc))
+            return
+        dialog = DatabaseLoginDialog(
+            datasources, self.iface.mainWindow(),
+            saved_credentials=self._database_session.saved_credentials,
+            forget_credentials=self._database_session.forget_credentials,
+        )
+        try:
+            while self._run_dialog(dialog) == self._accepted_code(dialog):
+                source, username, password = dialog.credentials()
+                try:
+                    self._database_session.connect(
+                        source, username, password, remember=dialog.remember_password(),
+                    )
+                except GeoDataCatalogException as exc:
+                    dialog.clear_password()
+                    self._show_error("Database login", str(exc))
+                else:
+                    self._update_database_connection_ui()
+                    self._restore_database_project_layers()
+                    self._refresh_connection_views()
+                    return
+                finally:
+                    password = ""
+        finally:
+            dialog.clear_password()
+            dialog.deleteLater()
+
+    def _disconnect_database(self) -> bool:
+        session = self._database_session
+        if session.datasource is None:
+            return True
+        source_ids = {
+            source.id for source in self._datasource_service.list_datasources()
+            if session.is_connected(source)
+        }
+        source_ids.add(session.datasource.id)
+        project = QgsProject.instance()
+        layers = [
+            layer for layer in project.mapLayers().values()
+            if str(layer.customProperty("geodata_catalog/datasource_id", "")) in source_ids
+        ]
+        if layers:
+            if QMessageBox.question(
+                self.iface.mainWindow(), "Disconnect database",
+                f"Remove {len(layers)} database layer(s) from the project and disconnect?",
+                self._messagebox_yes_button() | self._messagebox_no_button(),
+                self._messagebox_no_button(),
+            ) != self._messagebox_yes_button():
+                return False
+        if any(layer.isEditable() for layer in layers):
+            self._show_error("Disconnect database", "Save or discard pending layer edits before disconnecting.")
+            return False
+        try:
+            for dock in list(self._custom_view_docks):
+                if getattr(dock, "_layer", None) in layers:
+                    dock.close()
+            project.removeMapLayers([layer.id() for layer in layers])
+            session.disconnect()
+        except GeoDataCatalogException as exc:
+            self._show_error("Disconnect database", str(exc))
+            return False
+        self._layer_cache.clear()
+        self._loaded_layer_keys = {
+            key for key in self._loaded_layer_keys
+            if not any(key.startswith(f"{source_id}:") for source_id in source_ids)
+        }
+        self._update_database_connection_ui()
+        if not self._unloading:
+            self._refresh_connection_views()
+        return True
+
+    def _on_database_project_read(self, *_args) -> None:
+        self._loaded_layer_keys.clear()
+        if self._database_session.datasource is not None:
+            self._restore_database_project_layers()
+        self._refresh_connection_views()
+
+    def _restore_database_project_layers(self) -> None:
+        from qgis.core import QgsDataSourceUri
+
+        sources = {
+            source.id: source for source in self._datasource_service.list_datasources()
+            if self._database_session.is_connected(source)
+        }
+        for layer in QgsProject.instance().mapLayers().values():
+            source_id = str(layer.customProperty("geodata_catalog/datasource_id", ""))
+            if source_id not in sources or layer.providerType() != "oracle":
+                continue
+            source = sources[source_id]
+            config = self._database_session.connector_config(source)
+            uri = QgsDataSourceUri(layer.source())
+            uri.setConnection(
+                config["host"], str(config.get("port", 1521)), config["service_name"], "", "",
+            )
+            uri.setAuthConfigId(config["authcfg"])
+            layer.setDataSource(uri.uri(False), layer.name(), "oracle")
+            if not layer.isValid():
+                self._show_error("Restore database layer", f"Could not reconnect layer '{layer.name()}'.")
+                continue
+            name = str(layer.customProperty("geodata_catalog/source_layer_name", ""))
+            self._loaded_layer_keys.add(f"{source_id}:{name}")
+
+    def _refresh_connection_views(self) -> None:
+        if self._dock_widget is not None:
+            self._refresh_datasources()
+        elif self._loadable_layers_dock is not None:
+            self._refresh_all_layers_view()
+
+    def _update_database_connection_ui(self) -> None:
+        session = self._database_session
+        source = session.datasource
+        if source is None:
+            self._geometry_toolbar.set_database_connection()
+        else:
+            config = source.config
+            label = f"{session.username}@{config['service_name']}"
+            environment = str(config.get("environment", "")).strip()
+            if environment:
+                label += f" - {environment}"
+            self._geometry_toolbar.set_database_connection(
+                label, config.get("environment_color", "#E7E7E7"),
+                f"{source.name}: {config['host']}:{config.get('port', 1521)}/{config['service_name']}",
+            )
+        for widget in (self._dock_widget, self._loadable_layers_dock, *self._custom_view_docks):
+            if widget is not None:
+                self._apply_configured_theme(widget)
 
     def _show_dock(self) -> None:
         if self._dock_widget is None:
@@ -305,7 +473,13 @@ class GeoDataCatalogPlugin:
 
     def _load_ui_colors(self) -> dict[str, str]:
         try:
-            return self._system_configuration_repository.load_ui_colors()
+            colors = self._system_configuration_repository.load_ui_colors()
+            session = getattr(self, "_database_session", None)
+            if session is not None and session.datasource is not None:
+                color = session.datasource.config.get("environment_color")
+                if color:
+                    colors = {**colors, "primary": color, "primary_text": contrasting_text_color(color)}
+            return colors
         except Exception as exc:
             self._logger.error(f"Failed to load UI colors from system configuration: {exc}")
             return DEFAULT_UI_COLORS
@@ -672,6 +846,9 @@ class GeoDataCatalogPlugin:
             return
         try:
             name, datasource_type, config = dialog.get_payload()
+            if self._database_session.is_connected(datasource):
+                if not self._disconnect_database():
+                    return
             datasource.name = name
             datasource.datasource_type = datasource_type
             datasource.config = config
@@ -693,6 +870,10 @@ class GeoDataCatalogPlugin:
         if answer != yes_button:
             return
         try:
+            datasource = self._datasource_service.get_datasource(datasource_id)
+            if self._database_session.is_connected(datasource):
+                if not self._disconnect_database():
+                    return
             self._datasource_service.delete_datasource(datasource_id)
             self._layer_config_repository.delete_by_datasource(datasource_id)
             self._layer_cache.pop(datasource_id, None)
