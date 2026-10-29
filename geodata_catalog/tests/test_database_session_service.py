@@ -234,6 +234,28 @@ def test_expired_authentication_does_not_fall_back_to_saved_password(monkeypatch
     driver.connect.assert_not_called()
 
 
+def test_oracle_connection_error_redacts_encrypted_session_password(monkeypatch):
+    auth = Mock()
+    auth.config.side_effect = {"username": "gis_user", "password": "runtime-secret"}.__getitem__
+    manager = Mock()
+    manager.loadAuthenticationConfig.return_value = True
+    monkeypatch.setattr(qgis.core, "QgsApplication", SimpleNamespace(authManager=lambda: manager), raising=False)
+    monkeypatch.setattr(qgis.core, "QgsAuthMethodConfig", lambda: auth, raising=False)
+    driver = Mock()
+    driver.connect.side_effect = RuntimeError("ORA-01017: invalid login: runtime-secret")
+    monkeypatch.setattr(oracle_module, "oracledb", driver)
+    connector = oracle_module.OracleConnector("db", {
+        **source().config, "authcfg": "abc1234",
+    })
+
+    with pytest.raises(DatasourceConnectionException) as caught:
+        connector._connect()
+
+    assert "ORA-01017" in str(caught.value)
+    assert "[REDACTED]" in str(caught.value)
+    assert "runtime-secret" not in str(caught.value)
+
+
 def test_layer_loading_never_logs_a_provider_uri():
     from geodata_catalog.models.layer_definition import LayerDefinition
     from geodata_catalog.services.qgis_loader_service import QgisLoaderService

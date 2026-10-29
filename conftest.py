@@ -26,6 +26,13 @@ def _install_qgis_stubs() -> None:
     qgis_pyqt = _make_stub("qgis.PyQt")
     qgis_pyqt_core = _make_stub("qgis.PyQt.QtCore")
     qgis_pyqt_widgets = _make_stub("qgis.PyQt.QtWidgets")
+    qgis_pyqt_gui = _make_stub("qgis.PyQt.QtGui")
+    qgis_pyqt_xml = _make_stub("qgis.PyQt.QtXml")
+    for name in ("QSize", "QVariant"):
+        setattr(qgis_pyqt_core, name, type(name, (), {"__init__": lambda self, *args: None}))
+    for name in ("QIcon", "QColor", "QPalette"):
+        setattr(qgis_pyqt_gui, name, type(name, (), {}))
+    qgis_pyqt_xml.QDomDocument = type("QDomDocument", (), {})
 
     class _FakeQt:
         UserRole = 256
@@ -189,6 +196,8 @@ def _install_qgis_stubs() -> None:
         ("qgis.PyQt", qgis_pyqt),
         ("qgis.PyQt.QtCore", qgis_pyqt_core),
         ("qgis.PyQt.QtWidgets", qgis_pyqt_widgets),
+        ("qgis.PyQt.QtGui", qgis_pyqt_gui),
+        ("qgis.PyQt.QtXml", qgis_pyqt_xml),
     ]:
         sys.modules[mod_name] = mod
 

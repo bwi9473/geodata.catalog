@@ -89,7 +89,7 @@ class LayerFilterService:
 
         - Multiple comma-separated values become an IN clause.
         - Numeric column types are emitted without quotes.
-        - Text-like column types are single-quoted and SQL-escaped.
+        - Text-like column types are SQL-escaped and compared case-insensitively.
         """
         parts = []
         for f in filters:
@@ -105,6 +105,7 @@ class LayerFilterService:
             return None
 
         is_numeric = LayerFilterService._is_numeric_type(filter_item.data_type)
+        column = f'"{filter_item.column}"'
         if is_numeric:
             numeric_values = [
                 val for val in values if LayerFilterService._NUMERIC_VALUE_RE.match(val)
@@ -113,14 +114,15 @@ class LayerFilterService:
                 return None
             literals = numeric_values
         else:
+            column = f"LOWER({column})"
             literals = [
-                f"'{LayerFilterService._escape_sql_string(val)}'"
+                f"LOWER('{LayerFilterService._escape_sql_string(val)}')"
                 for val in values
             ]
 
         if len(literals) == 1:
-            return f'"{filter_item.column}" = {literals[0]}'
-        return f'"{filter_item.column}" IN ({", ".join(literals)})'
+            return f'{column} = {literals[0]}'
+        return f'{column} IN ({", ".join(literals)})'
 
     @staticmethod
     def _split_filter_values(raw_value: str) -> list[str]:
@@ -248,29 +250,25 @@ class LayerFilterService:
         column_name: str,
         data_type: str,
     ) -> str:
-        col_escaped = re.escape(column_name)
-
-        in_pattern = re.compile(
-            rf'"{col_escaped}"\s+IN\s*\(([^)]*)\)',
-            re.IGNORECASE,
-        )
-        in_match = in_pattern.search(subset_string)
-        if in_match:
-            parsed = LayerFilterService._parse_in_values(in_match.group(1), data_type)
-            return ", ".join(parsed)
-
-        eq_pattern = re.compile(
-            rf'"{col_escaped}"\s*=\s*(\'[^\']*(?:\'\'[^\']*)*\'|-?\d+(?:\.\d+)?)',
-            re.IGNORECASE,
-        )
-        eq_match = eq_pattern.search(subset_string)
-        if not eq_match:
+        match = LayerFilterService._attribute_clause_pattern(column_name).search(subset_string)
+        if not match:
             return ""
+        values = match.group("in_values") or match.group("eq_value")
+        if match.group("eq_value") and LayerFilterService._NUMERIC_VALUE_RE.fullmatch(values):
+            return values
+        return ", ".join(LayerFilterService._parse_in_values(values, data_type))
 
-        token = eq_match.group(1).strip()
-        if token.startswith("'") and token.endswith("'"):
-            return token[1:-1].replace("''", "'")
-        return token
+    @staticmethod
+    def _attribute_clause_pattern(column_name: str) -> re.Pattern[str]:
+        column = rf'"{re.escape(column_name)}"'
+        column = rf'(?:LOWER\(\s*{column}\s*\)|{column})'
+        literal = r"(?:'(?:''|[^'])*'|-?\d+(?:\.\d+)?)"
+        literal = rf'(?:LOWER\(\s*{literal}\s*\)|{literal})'
+        return re.compile(
+            rf'{column}\s*(?:IN\s*\((?P<in_values>{literal}(?:\s*,\s*{literal})*)\)'
+            rf'|=\s*(?P<eq_value>{literal}))',
+            re.IGNORECASE,
+        )
 
     @staticmethod
     def _parse_in_values(raw_values: str, data_type: str) -> list[str]:
@@ -332,9 +330,7 @@ class LayerFilterService:
 
         s = subset_string.strip()
         for col in columns:
-            pat_eq = rf'"{re.escape(col)}"\s*=\s*(?:\'[^\']*(?:\'\'[^\']*)*\'|-?\d+(?:\.\d+)?)'
-            pat_in = rf'"{re.escape(col)}"\s+IN\s*\([^)]*\)'
-            pat_inner = rf'(?:{pat_eq}|{pat_in})'
+            pat_inner = LayerFilterService._attribute_clause_pattern(col).pattern
 
             # Remove "AND (col = 'val')" — filter was appended with parens
             s = re.sub(r'\s+AND\s+\(' + pat_inner + r'\)', "", s, flags=re.IGNORECASE).strip()

@@ -117,6 +117,8 @@ def test_load_ui_colors_normalizes_invalid_values(tmp_path):
             {
                 "ui_colors": {
                     "primary": "#123abc",
+                    "navigation_background": "#102030",
+                    "navigation_text": "#abcdef",
                     "text": "invalid",
                     "border": 123,
                 }
@@ -128,5 +130,7 @@ def test_load_ui_colors_normalizes_invalid_values(tmp_path):
     colors = repository.load_ui_colors()
 
     assert colors["primary"] == "#123abc"
+    assert colors["navigation_background"] == "#102030"
+    assert colors["navigation_text"] == "#abcdef"
     assert colors["text"] == DEFAULT_UI_COLORS["text"]
     assert colors["border"] == DEFAULT_UI_COLORS["border"]

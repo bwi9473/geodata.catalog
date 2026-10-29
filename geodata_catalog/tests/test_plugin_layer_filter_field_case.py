@@ -1,5 +1,10 @@
 from geodata_catalog.plugin import GeoDataCatalogPlugin
-from geodata_catalog.services.layer_filter_service import FlightLevelFilter, LayerFilter
+from geodata_catalog.services.layer_filter_service import (
+    AttributeSearchFilter,
+    FlightLevelFilter,
+    LayerFilter,
+    LayerFilterService,
+)
 from qgis.PyQt.QtWidgets import QAction
 
 
@@ -91,6 +96,29 @@ def test_apply_layer_filter_removes_cleared_distinct_selection_clause():
     plugin._apply_layer_filter(layer, layer_filter)
 
     assert layer.last_subset_string == ""
+
+
+def test_apply_case_insensitive_filter_can_be_changed_and_cleared():
+    plugin = GeoDataCatalogPlugin.__new__(GeoDataCatalogPlugin)
+    plugin._find_layer_definition_for_qgis_layer = lambda _layer: type(
+        "_Definition", (), {"searchable_columns": [{"name": "AERODROMEID"}]}
+    )()
+    plugin._logger = type("_Logger", (), {"info": lambda self, _message: None})()
+    layer = _FakeLayer(
+        ["AERODROMEID"], subset_string='(base_filter = 1) AND ("AERODROMEID" = \'EHAM\')'
+    )
+    fl = FlightLevelFilter("none", 0, 600, False)
+    for value in ("eham", "EHRD, eham"):
+        plugin._apply_layer_filter(
+            layer, LayerFilter(fl, [AttributeSearchFilter("AERODROMEID", value)])
+        )
+        assert layer.last_subset_string.count('LOWER("AERODROMEID")') == 1
+        parsed = LayerFilterService.parse_attribute_filters_from_subset(
+            layer.last_subset_string, [{"name": "AERODROMEID"}]
+        )
+        assert parsed[0].value == value
+    plugin._apply_layer_filter(layer, LayerFilter(fl, []))
+    assert layer.last_subset_string == "(base_filter = 1)"
 
 
 def test_build_geodata_context_menu_includes_quick_search_vertices_and_group_columns():

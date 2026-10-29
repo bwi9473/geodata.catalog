@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.models.saved_layer_view import SavedLayerView
+from geodata_catalog.ui.catalog_layout import (
+    CatalogNavigation,
+    CollapsibleSection,
+    catalog_styles,
+)
 
 from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QIcon, QPalette
@@ -9,8 +14,6 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDockWidget,
     QFrame,
-    QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -36,6 +39,9 @@ _ITEM_DATA_ROLE = getattr(Qt, "ItemDataRole", None)
 USER_ROLE = getattr(Qt, "UserRole", None)
 if USER_ROLE is None and _ITEM_DATA_ROLE is not None:
     USER_ROLE = _ITEM_DATA_ROLE.UserRole
+CATEGORY_ROLE = USER_ROLE + 1
+
+
 def _display_category_label(raw_value: str) -> str:
     value = (raw_value or "").strip()
     if not value:
@@ -70,7 +76,7 @@ class LoadableLayersDockWidget(QDockWidget):
         self._selected_saved_view_id = ""
         self._highlighted_preset_widget = None
         self._highlighted_preset_indicator = None
-        self._updating_accordion = False
+        self._selected_category = ""
         self._theme_primary = "#59A947"
         self._theme_primary_text = "#FFFFFF"
         self._theme_text = "#1E293B"
@@ -84,89 +90,88 @@ class LoadableLayersDockWidget(QDockWidget):
     def _build_ui(self) -> None:
         body = QWidget(self)
         root = QVBoxLayout(body)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
 
-        basemap_toolbox = QFrame()
-        basemap_toolbox.setProperty("groupingToolbox", True)
-        basemap_row = QHBoxLayout(basemap_toolbox)
-        basemap_row.setContentsMargins(6, 3, 6, 3)
-        basemap_row.setSpacing(6)
-        basemap_row.addWidget(QLabel("Basemap"))
-        self.basemap_combo = QComboBox()
-        self.basemap_combo.setToolTip("Choose the map background")
-        basemap_row.addWidget(self.basemap_combo)
-        self.project_basemap_button = QToolButton()
-        self.project_basemap_button.setFixedSize(28, 28)
-        self.project_basemap_button.setAutoRaise(True)
-        self.project_basemap_button.setIcon(QIcon(":/images/themes/default/mActionAddRasterLayer.svg"))
-        self.project_basemap_button.setToolTip("Load the selected basemap as the map background")
-        self.project_basemap_button.clicked.connect(self._on_project_basemap_clicked)
-        basemap_row.addWidget(self.project_basemap_button)
-        basemap_row.addStretch(1)
-        root.addWidget(basemap_toolbox)
+        workspace = QSplitter(self._orientation("Horizontal"))
+        self.navigation = CatalogNavigation("Browse catalog")
+        self.navigation.selection_changed.connect(self._on_navigation_changed)
+        workspace.addWidget(self.navigation)
 
-        search_row = QHBoxLayout()
-        search_row.setSpacing(6)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(10, 0, 0, 0)
+        content_layout.setSpacing(8)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
         self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText("Search in panel...")
+        self.filter_edit.setPlaceholderText("Search layers, sources, or categories...")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
-        search_row.addWidget(self.filter_edit, stretch=1)
-        self.filter_button = QToolButton()
-        self.filter_button.setFixedSize(28, 28)
-        self.filter_button.setAutoRaise(True)
-        self.filter_button.setIcon(QIcon(":/images/themes/default/mActionFilter.svg"))
-        self.filter_button.setToolTip("Open the first category")
-        self.filter_button.clicked.connect(self._toggle_categories)
-        search_row.addWidget(self.filter_button)
-        root.addLayout(search_row)
+        toolbar.addWidget(self.filter_edit, stretch=1)
+        content_layout.addLayout(toolbar)
 
-        content_splitter = QSplitter(self._orientation("Horizontal"))
+        content_splitter = QSplitter(self._orientation("Vertical"))
 
         self.layers_tree = QTreeWidget()
         self.layers_tree.setColumnCount(2)
-        self.layers_tree.setHeaderHidden(True)
-        self.layers_tree.setRootIsDecorated(True)
+        self.layers_tree.setHeaderLabels(["Layer", "Geometry"])
+        self.layers_tree.setRootIsDecorated(False)
         self.layers_tree.setAlternatingRowColors(False)
         self.layers_tree.setUniformRowHeights(True)
-        self.layers_tree.setIndentation(19)
+        self.layers_tree.setIndentation(0)
         self.layers_tree.setSelectionMode(self._selection_mode("SingleSelection"))
-        self.layers_tree.setMinimumWidth(380)
         header = self.layers_tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, self._header_resize_mode("Stretch"))
         header.setSectionResizeMode(1, self._header_resize_mode("Fixed"))
-        self.layers_tree.setColumnWidth(1, 24)
+        self.layers_tree.setColumnWidth(1, 84)
         self.layers_tree.itemClicked.connect(self._on_item_clicked)
         self.layers_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.layers_tree.itemExpanded.connect(self._on_category_expanded)
-        context_policy = getattr(Qt, "CustomContextMenu", None)
-        if context_policy is None:
-            context_policy = Qt.ContextMenuPolicy.CustomContextMenu
-        self.layers_tree.setContextMenuPolicy(context_policy)
+        self.layers_tree.setContextMenuPolicy(self._context_menu_policy())
         self.layers_tree.customContextMenuRequested.connect(self._on_context_menu_requested)
         content_splitter.addWidget(self.layers_tree)
-        content_splitter.addWidget(self._build_details_panel())
-        content_splitter.setStretchFactor(0, 2)
-        content_splitter.setStretchFactor(1, 3)
-        content_splitter.setSizes([450, 670])
-        root.addWidget(content_splitter, stretch=1)
+        self.details_section = CollapsibleSection(
+            "Saved views and presets", self._build_details_panel()
+        )
+        content_splitter.addWidget(self.details_section)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 0)
+        content_splitter.setSizes([520, 110])
+        content_layout.addWidget(content_splitter, stretch=1)
 
-        action_row = QHBoxLayout()
-        action_row.addStretch(1)
+        footer = QHBoxLayout()
+        footer.setSpacing(6)
+        footer.addWidget(QLabel("Basemap"))
+        self.basemap_combo = QComboBox()
+        self.basemap_combo.setToolTip("Choose the map background")
+        footer.addWidget(self.basemap_combo)
+        self.project_basemap_button = QToolButton()
+        self.project_basemap_button.setFixedSize(32, 32)
+        self.project_basemap_button.setIcon(QIcon(":/images/themes/default/mActionAddRasterLayer.svg"))
+        self.project_basemap_button.setToolTip("Load the selected basemap as the map background")
+        self.project_basemap_button.clicked.connect(self._on_project_basemap_clicked)
+        footer.addWidget(self.project_basemap_button)
+        footer.addStretch(1)
         self.load_button = QPushButton("Load")
         self.load_button.setEnabled(False)
         self.load_button.clicked.connect(self._on_load_button_clicked)
-        action_row.addWidget(self.load_button)
+        footer.addWidget(self.load_button)
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.close)
-        action_row.addWidget(self.close_button)
-        root.addLayout(action_row)
+        footer.addWidget(self.close_button)
+        content_layout.addLayout(footer)
+
+        workspace.addWidget(content)
+        workspace.setStretchFactor(0, 0)
+        workspace.setStretchFactor(1, 1)
+        workspace.setSizes([180, 700])
+        root.addWidget(workspace, stretch=1)
 
         self._show_layer_details(None)
         self.setWidget(body)
-        self.setMinimumWidth(1140)
+        self.setMinimumWidth(720)
 
     def _build_details_panel(self) -> QWidget:
         panel = QWidget()
@@ -176,22 +181,6 @@ class LoadableLayersDockWidget(QDockWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        overview = QFrame()
-        overview.setProperty("detailPanel", True)
-        overview.setFrameShape(self._frame_shape("StyledPanel"))
-        overview.setFrameShadow(self._frame_shadow("Plain"))
-        overview.setAutoFillBackground(True)
-        overview_layout = QVBoxLayout(overview)
-        overview_layout.setContentsMargins(8, 8, 8, 8)
-        self.detail_title = QLabel("Select a default layer")
-        self.detail_title.setProperty("detailTitle", True)
-        self.detail_title.setWordWrap(True)
-        overview_layout.addWidget(self.detail_title)
-        self.detail_form = QFormLayout()
-        self.detail_form.setRowWrapPolicy(self._form_row_wrap_policy("DontWrapRows"))
-        overview_layout.addLayout(self.detail_form)
-        layout.addWidget(overview)
-
         self.presets_group = QFrame()
         self.presets_group.setProperty("detailPanel", True)
         self.presets_group.setFrameShape(self._frame_shape("StyledPanel"))
@@ -200,9 +189,6 @@ class LoadableLayersDockWidget(QDockWidget):
         presets_layout = QVBoxLayout(self.presets_group)
         presets_layout.setContentsMargins(8, 8, 8, 8)
         presets_layout.setSpacing(4)
-        presets_title = QLabel("Saved views and presets")
-        presets_title.setProperty("sectionLabel", True)
-        presets_layout.addWidget(presets_title)
         self.preset_hint = QLabel("Select a default layer to view its saved views.")
         self.preset_hint.setWordWrap(True)
         presets_layout.addWidget(self.preset_hint)
@@ -240,20 +226,13 @@ class LoadableLayersDockWidget(QDockWidget):
         self._theme_dataset_text = dataset_text
         self._theme_preset_text = preset_text
         self.setStyleSheet(
-            "\n".join(
+            catalog_styles(ui_colors)
+            + "\n"
+            + "\n".join(
                 [
-                    f"QDockWidget {{ background: {window_background}; color: {text}; }}",
-                    f"QWidget {{ background: {window_background}; color: {text}; }}",
                     f"QWidget[detailsPanel='true'] {{ background: {panel_background}; color: {text}; }}",
-                    f"QLineEdit, QComboBox {{ background: {window_background}; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 30px; padding: 2px 8px; }}",
-                    f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {primary}; }}",
                     f"QToolButton {{ border: 1px solid {border}; border-radius: 4px; background: {window_background}; color: {text}; min-width: 30px; min-height: 30px; }}",
-                    f"QToolButton:hover {{ border-color: {primary}; background: {hover_background}; color: {header_text}; }}",
-                    f"QPushButton {{ background: {window_background}; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 28px; padding: 2px 12px; }}",
-                    f"QPushButton:hover {{ border-color: {primary}; background: {hover_background}; color: {header_text}; }}",
-                    f"QPushButton:pressed {{ background: {primary}; color: {primary_text}; }}",
-                    f"QPushButton:disabled {{ color: {border}; background: {panel_background}; }}",
-                    f"QTreeWidget {{ background: {panel_background}; color: {dataset_text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QTreeWidget {{ background: {window_background}; color: {dataset_text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
                     f"QTreeWidget::item {{ color: {dataset_text}; }}",
                     f"QTreeWidget::item:has-children {{ color: {category_text}; }}",
                     f"QTreeWidget::item {{ min-height: 30px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
@@ -334,17 +313,6 @@ class LoadableLayersDockWidget(QDockWidget):
 
         for category in sorted(grouped_rows.keys(), key=str.casefold):
             category_rows = grouped_rows[category]
-            category_item = QTreeWidgetItem(
-                [f"{category} (COUNT = {len(category_rows)})"]
-            )
-            category_item.setFirstColumnSpanned(True)
-            category_item.setIcon(0, QIcon(":/images/themes/default/mActionAddGroup.svg"))
-            category_font = category_item.font(0)
-            category_font.setBold(True)
-            category_item.setFont(0, category_font)
-            category_item.setForeground(0, QColor(self._theme_category_text))
-            self.layers_tree.addTopLevelItem(category_item)
-
             category_rows = sorted(
                 category_rows,
                 key=lambda r: (
@@ -369,9 +337,9 @@ class LoadableLayersDockWidget(QDockWidget):
                     and view.layer_name == layer.layer_name
                 )
                 item = QTreeWidgetItem(
-                    category_item,
                     [f"{layer.display_name} ({saved_count} saved layer{'s' if saved_count != 1 else ''})"],
                 )
+                self.layers_tree.addTopLevelItem(item)
                 item.setIcon(0, self._datasource_icon(source_type))
                 geometry_icon = self._layer_icon(layer)
                 if geometry_icon is not None:
@@ -379,6 +347,7 @@ class LoadableLayersDockWidget(QDockWidget):
                 item.setTextAlignment(1, self._right_alignment())
                 item_payload = (datasource_id, layer.layer_name, layer_key, loadable)
                 item.setData(0, USER_ROLE, item_payload)
+                item.setData(0, CATEGORY_ROLE, category)
                 if self._highlighted_identity == item_payload[:3]:
                     self._set_item_highlight(item)
                 item.setToolTip(
@@ -387,6 +356,7 @@ class LoadableLayersDockWidget(QDockWidget):
                     f"Source: {source_name} ({source_type})\n"
                     f"Layer: {layer.display_name}\n"
                     f"Geometry: {layer.geometry_type or 'Unknown'}\n"
+                    f"Geometry column: {layer.geometry_column or 'Not set'}\n"
                     f"CRS: {layer.default_crs or 'Not set'}\n"
                     f"Loadable: {'Yes' if loadable else 'No'}\n"
                     "Double-click to load this layer."
@@ -396,10 +366,26 @@ class LoadableLayersDockWidget(QDockWidget):
                 if not loadable:
                     item.setDisabled(True)
 
-            category_item.setExpanded(False)
-
-        if self.layers_tree.topLevelItemCount():
-            self.layers_tree.topLevelItem(0).setExpanded(True)
+        navigation_entries = [
+            (
+                "",
+                "All layers",
+                sum(len(category_rows) for category_rows in grouped_rows.values()),
+                QIcon(":/images/themes/default/mIconLayerGroup.svg"),
+            )
+        ]
+        navigation_entries.extend(
+            (
+                category,
+                category,
+                len(grouped_rows[category]),
+                QIcon(":/images/themes/default/mActionAddGroup.svg"),
+            )
+            for category in sorted(grouped_rows, key=str.casefold)
+        )
+        if self._selected_category not in grouped_rows:
+            self._selected_category = ""
+        self.navigation.set_entries(navigation_entries, self._selected_category)
         self._updating_tree = False
         self._populate_presets()
         self._show_layer_details(None)
@@ -541,20 +527,17 @@ class LoadableLayersDockWidget(QDockWidget):
         self._show_layer_details(self._detail_layer)
 
     def _select_tree_layer(self, datasource_id: str, layer_name: str) -> None:
-        for category_index in range(self.layers_tree.topLevelItemCount()):
-            category_item = self.layers_tree.topLevelItem(category_index)
-            for layer_index in range(category_item.childCount()):
-                item = category_item.child(layer_index)
-                payload = item.data(0, USER_ROLE)
-                if (
-                    payload and len(payload) == 4
-                    and str(payload[0]) == datasource_id
-                    and str(payload[1]) == layer_name
-                ):
-                    self._highlighted_identity = payload[:3]
-                    self._highlighted_item = item
-                    self._set_item_highlight(item)
-                    return
+        for index in range(self.layers_tree.topLevelItemCount()):
+            item = self.layers_tree.topLevelItem(index)
+            payload = item.data(0, USER_ROLE)
+            if (
+                payload and len(payload) == 4
+                and str(payload[0]) == datasource_id
+                and str(payload[1]) == layer_name
+            ):
+                self._highlighted_identity = payload[:3]
+                self._set_item_highlight(item)
+                return
 
     def _on_preset_context_menu(self, position) -> None:
         item = self.presets_list.itemAt(position)
@@ -673,7 +656,6 @@ class LoadableLayersDockWidget(QDockWidget):
         indicator.update()
 
     def _show_layer_details(self, layer: LayerDefinition | None) -> None:
-        self.detail_title.setText(layer.display_name if layer else "Select a default layer")
         has_layer = layer is not None and self._detail_loadable
         if not has_layer:
             self.load_button.setText("Load")
@@ -687,23 +669,6 @@ class LoadableLayersDockWidget(QDockWidget):
             self.load_button.setText("Load default layer")
             self.load_button.setToolTip("Load the selected default layer without applying a saved view.")
         self.load_button.setEnabled(has_layer)
-        while self.detail_form.rowCount():
-            self.detail_form.removeRow(0)
-        if layer is None:
-            self._populate_presets()
-            return
-        values = [
-            ("Technical name", layer.technical_name or layer.object_name or layer.layer_name),
-            ("Geometry", layer.geometry_type or "Unknown"),
-            ("CRS", layer.default_crs or "Not set"),
-            ("Features", str(layer.feature_count) if layer.feature_count is not None else "Unknown"),
-            ("Geometry column", layer.geometry_column or "Not set"),
-        ]
-        for label, value in values:
-            value_label = QLabel(value)
-            value_label.setProperty("detailValue", True)
-            value_label.setWordWrap(True)
-            self.detail_form.addRow(QLabel(label), value_label)
         self._populate_presets()
 
     def _on_load_button_clicked(self) -> None:
@@ -751,16 +716,6 @@ class LoadableLayersDockWidget(QDockWidget):
                 return layer
         return None
 
-    def _on_category_expanded(self, expanded_item: QTreeWidgetItem) -> None:
-        if self._updating_accordion:
-            return
-        self._updating_accordion = True
-        for index in range(self.layers_tree.topLevelItemCount()):
-            category_item = self.layers_tree.topLevelItem(index)
-            if category_item is not expanded_item:
-                category_item.setExpanded(False)
-        self._updating_accordion = False
-
     @staticmethod
     def _saved_view_filter_text(view: SavedLayerView) -> str:
         filter_state = view.filter_state
@@ -790,20 +745,6 @@ class LoadableLayersDockWidget(QDockWidget):
         if not self._updating_basemap:
             self.basemap_selected.emit(str(self.basemap_combo.currentData() or ""))
 
-    def _toggle_categories(self) -> None:
-        if self.layers_tree.topLevelItemCount() == 0:
-            return
-        current = self.layers_tree.indexOfTopLevelItem(self._expanded_category())
-        target = 0 if current < 0 else min(current + 1, self.layers_tree.topLevelItemCount() - 1)
-        self.layers_tree.topLevelItem(target).setExpanded(True)
-
-    def _expanded_category(self) -> QTreeWidgetItem | None:
-        for index in range(self.layers_tree.topLevelItemCount()):
-            item = self.layers_tree.topLevelItem(index)
-            if item.isExpanded():
-                return item
-        return None
-
     @staticmethod
     def _orientation(name: str):
         orientation = getattr(Qt, "Orientation", None)
@@ -817,13 +758,6 @@ class LoadableLayersDockWidget(QDockWidget):
         if policy is not None:
             return policy.CustomContextMenu
         return Qt.CustomContextMenu
-
-    @staticmethod
-    def _form_row_wrap_policy(name: str):
-        policy = getattr(QFormLayout, "RowWrapPolicy", None)
-        if policy is not None:
-            return getattr(policy, name)
-        return getattr(QFormLayout, name)
 
     @staticmethod
     def _geometry_icon_kind(geometry_type: str | None) -> str:
@@ -874,17 +808,19 @@ class LoadableLayersDockWidget(QDockWidget):
     def _apply_filter(self, text: str) -> None:
         needle = text.strip().casefold()
         for index in range(self.layers_tree.topLevelItemCount()):
-            category_item = self.layers_tree.topLevelItem(index)
-            visible_children = 0
-            for child_index in range(category_item.childCount()):
-                item = category_item.child(child_index)
-                visible = (
-                    not needle
-                    or needle in item.text(0).casefold()
-                    or needle in item.toolTip(0).casefold()
-                )
-                item.setHidden(not visible)
-                visible_children += int(visible)
-            category_item.setHidden(visible_children == 0)
-            if needle and visible_children:
-                category_item.setExpanded(True)
+            item = self.layers_tree.topLevelItem(index)
+            category = item.data(0, CATEGORY_ROLE)
+            category_selected = (
+                not self._selected_category
+                or category == self._selected_category
+            )
+            visible = (
+                not needle
+                or needle in item.text(0).casefold()
+                or needle in item.toolTip(0).casefold()
+            )
+            item.setHidden(not visible or not category_selected)
+
+    def _on_navigation_changed(self, category: str) -> None:
+        self._selected_category = category
+        self._apply_filter(self.filter_edit.text())

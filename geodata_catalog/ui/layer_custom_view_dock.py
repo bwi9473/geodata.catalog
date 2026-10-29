@@ -273,8 +273,6 @@ class LayerCustomViewWindow(QMainWindow):
         self._attribute_grid = None
         self._checkbox_grid = None
         self._attribute_layout_key = None
-        self._field_search_edit = None
-        self._filled_fields_check = None
 
         body = QWidget(self)
         self.setCentralWidget(body)
@@ -382,31 +380,6 @@ class LayerCustomViewWindow(QMainWindow):
         if self._flight_group is not None:
             panel_layout.addWidget(self._flight_group)
         if self._attr_group is not None:
-            self._field_browser = QWidget()
-            browser_layout = QVBoxLayout(self._field_browser)
-            browser_layout.setContentsMargins(0, 0, 0, 0)
-            browser_row = QHBoxLayout()
-            self._field_search_edit = QLineEdit()
-            self._field_search_edit.setObjectName("FilterInput")
-            self._field_search_edit.setPlaceholderText("Find filter field by name or label...")
-            self._field_search_edit.setClearButtonEnabled(True)
-            self._field_search_edit.setToolTip(
-                "Find filter fields without changing their values or the layer results"
-            )
-            self._filled_fields_check = QCheckBox("Only filled fields")
-            self._filled_fields_check.setToolTip(
-                "Show fields with a filter value. Hidden fields still participate in Search."
-            )
-            browser_row.addWidget(self._field_search_edit, 1)
-            browser_row.addWidget(self._filled_fields_check)
-            browser_layout.addLayout(browser_row)
-            self._field_count_label = QLabel()
-            self._field_count_label.setObjectName("FilterHintLabel")
-            self._field_count_label.setWordWrap(True)
-            browser_layout.addWidget(self._field_count_label)
-            panel_layout.addWidget(self._field_browser)
-            self._field_search_edit.textChanged.connect(self._refresh_attribute_fields)
-            self._filled_fields_check.toggled.connect(self._refresh_attribute_fields)
             self._attr_scroll_area = QScrollArea()
             self._attr_scroll_area.setWidgetResizable(True)
             self._attr_scroll_area.setMinimumHeight(100)
@@ -617,15 +590,13 @@ class LayerCustomViewWindow(QMainWindow):
                 _qt_enum_value(QSizePolicy, "Policy", "Ignored"),
                 _qt_enum_value(QSizePolicy, "Policy", "Preferred"),
             )
+            field_cell.setMaximumWidth(360)
             field_cell.setToolTip(f"{label} ({col_name})\nEnter multiple values separated by commas.")
             self._attribute_fields.append((col_name, field_cell))
             self._attr_labels[col_name] = str(label)
             self._attr_types[col_name] = data_type
 
         attr_form.addLayout(field_grid)
-        self._no_fields_label = QLabel("No matching filter fields. Clear the field search or turn off Only filled fields.")
-        self._no_fields_label.setWordWrap(True)
-        attr_form.addWidget(self._no_fields_label)
         attr_form.addStretch(1)
         return attr_group
 
@@ -684,48 +655,19 @@ class LayerCustomViewWindow(QMainWindow):
     def _filter_grid_column_count(available_width: int, field_count: int) -> int:
         return max(1, min(4, field_count, (available_width + 14) // (260 + 14)))
 
-    def _attribute_filter_value(self, column_name: str) -> str:
-        if column_name in self._attr_edits:
-            return self._attr_edits[column_name].text().strip()
-        if column_name in self._attr_combos:
-            return self._normalized_filter_text(self._attr_combos[column_name].currentText())
-        return self._checkbox_filter_value(column_name, self._attr_checks[column_name])
-
     def _on_attribute_filter_edited(self, *_args) -> None:
         self._refresh_filter_toggle_buttons()
-        self._refresh_attribute_fields()
 
     def _refresh_attribute_fields(self, *_args) -> None:
         if self._attr_scroll_area is None:
             return
-        query = self._field_search_edit.text().strip().casefold()
-        only_filled = self._filled_fields_check.isChecked()
         fields = self._checkbox_fields + self._attribute_fields
-        visible_names = []
-        filled_count = 0
-        hidden_filled_count = 0
-        for name, cell in fields:
-            filled = bool(self._attribute_filter_value(name))
-            matches = query in name.casefold() or query in self._attr_labels[name].casefold()
-            visible = matches and (filled or not only_filled)
-            cell.setVisible(visible)
-            filled_count += int(filled)
-            hidden_filled_count += int(filled and not visible)
-            if visible:
-                visible_names.append(name)
-        summary = f"{len(visible_names)} of {len(fields)} fields | {filled_count} filled"
-        if hidden_filled_count:
-            summary += f" | {hidden_filled_count} filled fields hidden (included in Search)"
-        self._field_count_label.setText(summary)
-        self._no_fields_label.setVisible(not visible_names)
-
         available_width = max(0, self._attr_scroll_area.viewport().width() - 64)
-        columns = self._filter_grid_column_count(available_width, len(visible_names))
-        layout_key = (columns, tuple(visible_names))
+        columns = self._filter_grid_column_count(available_width, len(fields))
+        layout_key = (columns, tuple(name for name, _cell in fields))
         if layout_key == self._attribute_layout_key:
             return
         self._attribute_layout_key = layout_key
-        visible_set = set(visible_names)
         for grid, grid_fields in (
             (self._checkbox_grid, self._checkbox_fields),
             (self._attribute_grid, self._attribute_fields),
@@ -736,11 +678,8 @@ class LayerCustomViewWindow(QMainWindow):
                 grid.takeAt(0)
             for column in range(4):
                 grid.setColumnStretch(column, 1 if column < columns else 0)
-            index = 0
-            for name, cell in grid_fields:
-                if name in visible_set:
-                    grid.addWidget(cell, index // columns, index % columns)
-                    index += 1
+            for index, (_name, cell) in enumerate(grid_fields):
+                grid.addWidget(cell, index // columns, index % columns)
 
     def _prepare_distinct_checkbox_column(self, col_def: dict[str, str | bool]) -> bool:
         col_name = str(col_def.get("name", "")).strip()
@@ -995,7 +934,7 @@ class LayerCustomViewWindow(QMainWindow):
                     f"QAbstractButton {{ color: {palette['dataset_text']}; }}",
                     f"QTextBrowser, QTextEdit {{ color: {palette['dataset_text']}; }}",
                     f"a {{ text-decoration: none; color: #464feb; }}",
-                    f"QLineEdit#FilterInput, QComboBox#FilterInput {{ background: {palette['window_background']}; border: 1px solid {palette['border']}; border-radius: 6px; padding: 6px 8px; min-height: 24px; }}",
+                    f"QLineEdit#FilterInput, QComboBox#FilterInput {{ background: {palette['window_background']}; border: 1px solid {palette['border']}; border-radius: 4px; padding: 2px 6px; min-height: 20px; }}",
                     f"QLineEdit#FilterInput:focus, QComboBox#FilterInput:focus {{ border: 1px solid {palette['primary']}; }}",
                     f"QComboBox#FilterInput::drop-down {{ border: 0; width: 26px; }}",
                     f"QComboBox[filterDropdown='true'] {{ padding-right: 4px; }}",
@@ -1026,7 +965,6 @@ class LayerCustomViewWindow(QMainWindow):
             self._flight_group.setVisible(self._toggle_fl_btn.isChecked())
         if self._attr_scroll_area is not None:
             self._attr_scroll_area.setVisible(self._toggle_attr_btn.isChecked())
-            self._field_browser.setVisible(self._toggle_attr_btn.isChecked())
         self._refresh_filter_toggle_buttons()
 
     def _refresh_filter_toggle_buttons(self) -> None:
@@ -1254,10 +1192,6 @@ class LayerCustomViewWindow(QMainWindow):
         for combo in self._attr_combos.values():
             self._set_combo_filter_text(combo, "")
 
-        if self._field_search_edit is not None:
-            self._field_search_edit.clear()
-            self._filled_fields_check.setChecked(False)
-        self._refresh_attribute_fields()
         self._sync_preset_button_state(0, 600)
         self._on_search_clicked()
 
@@ -1661,8 +1595,11 @@ class LayerCustomViewWindow(QMainWindow):
         if len(values) != 1:
             return ""
         value = values[0]
-        distinct_values = set(self._values_for_column(parent_col))
-        return value if value in distinct_values else ""
+        return next(
+            (candidate for candidate in self._values_for_column(parent_col)
+             if candidate.casefold() == value.casefold()),
+            "",
+        )
 
     def _on_save_filters(self) -> None:
         self._on_search_clicked()

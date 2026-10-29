@@ -25,6 +25,8 @@ DEFAULT_UI_COLORS: dict[str, str] = {
     "preset_text": "#607D8B",
     "selection_background": "#CFE8D1",
     "selection_text": "#172A1B",
+    "navigation_background": "#173D26",
+    "navigation_text": "#F4F7F4",
 }
 
 LEGACY_UI_COLORS: dict[str, str] = {
@@ -42,6 +44,8 @@ LEGACY_UI_COLORS: dict[str, str] = {
     "preset_text": "#607D8B",
     "selection_background": "#D9EAF7",
     "selection_text": "#1E293B",
+    "navigation_background": "#173D26",
+    "navigation_text": "#F4F7F4",
 }
 
 

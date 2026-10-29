@@ -11,7 +11,7 @@ This guide explains how to add every supported datasource type to the GeoData Ca
 
 ## How Configuration Works
 
-Every datasource has a **Configuration JSON** object. This object is stored as-is and passed to the connector when layers are discovered or loaded. You enter it in the **Add Source** / **Edit Source** dialog.
+Every datasource has a **Configuration JSON** object. You enter it in the **Add Source** / **Edit Source** dialog. Oracle configuration contains connection coordinates, not passwords: credentials are supplied separately through **Connect**.
 
 The structure is always:
 
@@ -148,8 +148,13 @@ The Oracle connector discovers all spatial tables, views and materialized views 
 
 > **Prerequisite:** `python-oracledb` must be installed in the QGIS Python environment.
 > ```bash
-> pip install python-oracledb>=2.2.0
+> pip install "oracledb>=2.2.0"
 > ```
+
+The QGIS **Oracle provider** and its native Oracle client dependencies must also be
+available in the QGIS installation. Python thin-mode discovery alone does not make
+QGIS Oracle layers loadable. The QGIS Authentication Manager must be enabled and
+unlocked when the temporary encrypted login is stored.
 
 ### Configuration fields
 
@@ -158,8 +163,9 @@ The Oracle connector discovers all spatial tables, views and materialized views 
 | `host` | ✅ | string | — | Oracle server hostname or IP address |
 | `port` | | integer | `1521` | Oracle listener port |
 | `service_name` | ✅ | string | — | Oracle service name (e.g. `ORCLCDB`) |
-| `username` | ✅ | string | — | Database username |
-| `password` | ✅ | string | — | Database password |
+| `username` | | string | — | Optional non-secret account hint; the user must still enter credentials in Connect. |
+| `environment` | | string | `""` | Environment label shown beside the database, for example `Development` or `Production`. |
+| `environment_color` | | string | `#E7E7E7` | Toolbar background and catalog accent color, in `#RRGGBB` format. |
 | `schema` | | string | `null` | Restrict discovery to a single schema/owner. When omitted, all accessible spatial objects are listed. |
 | `key_column` | | string | `""` | Primary key column name, used by the QGIS Oracle provider for feature identification. |
 | `label_column` | | string | `null` | Global default field name to use as the QGIS feature label for all layers in this source. Can be overridden per layer via **right-click → Edit Layer Config**. |
@@ -169,9 +175,9 @@ The Oracle connector discovers all spatial tables, views and materialized views 
 ```json
 {
   "host": "oracle.example.com",
-  "service_name": "ORCLCDB",
-  "username": "gis_user",
-  "password": "secret"
+  "service_name": "BETA3",
+  "environment": "Development",
+  "environment_color": "#59A947"
 }
 ```
 
@@ -182,8 +188,8 @@ The Oracle connector discovers all spatial tables, views and materialized views 
   "host": "oracle.example.com",
   "port": 1521,
   "service_name": "GISPROD",
-  "username": "gis_read",
-  "password": "secret",
+  "environment": "Production",
+  "environment_color": "#C62828",
   "schema": "AIRSPACE",
   "key_column": "OBJECTID"
 }
@@ -198,8 +204,6 @@ To load layers from multiple schemas, create **separate datasources** — one pe
 {
   "host": "oracle.example.com",
   "service_name": "GISPROD",
-  "username": "gis_read",
-  "password": "secret",
   "schema": "AIRSPACE"
 }
 ```
@@ -209,13 +213,41 @@ To load layers from multiple schemas, create **separate datasources** — one pe
 {
   "host": "oracle.example.com",
   "service_name": "GISPROD",
-  "username": "gis_read",
-  "password": "secret",
   "schema": "NAVIGATION"
 }
 ```
 
-### How layers are discovered
+### Login and session lifecycle
+
+- QGIS starts without a login dialog or authentication-manager access. The plugin stays disconnected until the user clicks **Connect**; local file and REST sources remain usable.
+- Use the toolbar's green plug (**Connect**) to choose an enabled datasource and enter a username and masked password. Login is validated before a session becomes active.
+- The toolbar displays `username@service_name - environment`, with host and port in its tooltip. The configured environment color applies to the toolbar and catalog accents. The selected datasource determines the environment label/color when several schema definitions share one database.
+- One login covers every enabled Oracle datasource with the same host, port and service name, regardless of its schema filter. Host and service matching is case-insensitive. Different hosts, ports or services require disconnecting and logging in again.
+- Credentials are held in a temporary, **encrypted QGIS Authentication Manager** record. QGIS may request its authentication master password after the user clicks Connect. This is not password-free disk storage: the encrypted session record exists for the duration of the session, and is removed on disconnect/unload. After an abnormal exit, cleanup is retried at the next manual Connect, not during QGIS startup.
+- **Remember password (encrypted in QGIS)** is optional and unchecked by default when no saved login exists. After a successful database login it saves a separate encrypted account/password record for that host/port/service in the local QGIS profile. The plugin configuration/settings contain only authentication record identifiers, never the password. The saved login survives disconnect, plugin unload and QGIS restart.
+- Opening Connect fills any saved username and masked password for the selected database and checks Remember password. The user must still confirm Connect; no automatic login takes place. Changing databases clears the previous password before loading that database's saved login.
+- **Forget saved login for this database** immediately deletes the remembered record and clears the password field. Alternatively, uncheck Remember password and successfully connect to remove an older saved login. Failed login attempts do not overwrite existing saved credentials.
+- Both discovery (`python-oracledb`) and QGIS Oracle layers use this login. Layer URIs contain an `authcfg` reference, not a password. Oracle provider URIs are not persisted in catalog configuration or written to plugin load logs.
+- **Disconnect** removes the matching catalog layers after confirmation, closes their custom-view windows, clears catalog caches and deletes the temporary login. Pending edits must first be saved or discarded. Other datasource types and independently added layers are not removed.
+- Unloading the plugin also asks before removing layers that remain in the project. If removal is cancelled or edits are pending, the encrypted login is still removed, but layers are retained to avoid data loss; QGIS provider connections can remain active until those layers or the project are closed.
+- To switch databases, disconnect first and then use Connect again. Editing/deleting a datasource on the active endpoint also requires disconnecting.
+- Saved QGIS projects retain authentication references, not credentials. After login, restored catalog Oracle layers on that endpoint are rebound to the new session, preserving their table/geometry/filter URI settings. Other users still need matching datasource IDs/configuration and their own login.
+- Previously stored Oracle passwords are removed from both the active `config.json` and its QGIS-settings copy on startup. Old persisted Oracle layer URIs are cleared and rebuilt as needed. Backups, old QGIS projects and historical logs are not rewritten; remove any exposed copies and consider changing the old database password.
+
+Do not put `password` or `authcfg` in Oracle configuration. This migration concerns Oracle database credentials; REST authentication settings are unchanged.
+
+#### QGIS runtime acceptance checks
+
+Use QGIS 4/PyQt6 as the primary acceptance environment, and repeat on QGIS 3/PyQt5 when available:
+
+1. Configure `BETA3` with a green development color and two sources on different schemas of the same endpoint. Restart QGIS: there must be no login or master-password prompt. Click Connect manually; cancelling must leave database access disconnected while file sources still work.
+2. Try an incorrect login and cancel the QGIS master-password prompt: neither failure may enable a session. Then log in successfully and load layers from both schemas without another database login.
+3. Confirm that the toolbar displays the correct account/service/environment, tooltip endpoint and background color. Check that Oracle layer sources and a saved project contain authentication references, not a database password.
+4. Reopen the project, log in and verify restored layers, their existing subset filters, geometry columns and styles. Disconnect: cancelling must retain layers; accepting must remove only the matching catalog database layers. Pending edits must not be discarded.
+5. Check that normal disconnect/unload deletes the temporary QGIS authentication record. After an abnormal exit, verify cleanup on the next manual Connect, followed by a fresh login. Verify that the old active configuration and QGIS-settings copy no longer contain an Oracle password.
+6. Connect with Remember password checked, disconnect and restart QGIS. There must still be no startup prompt or automatic login. Click Connect: the saved account/password should be filled after unlocking QGIS authentication if required. Verify that a different endpoint does not receive those credentials, Forget deletes them, and successfully connecting with Remember password unchecked removes an earlier saved login.
+
+### Discovery
 
 The connector queries `ALL_SDO_GEOM_METADATA` joined to `ALL_OBJECTS` and `ALL_TAB_COLUMNS` to find every geometry column. For each spatial object it also:
 
@@ -378,13 +410,15 @@ This creates three layers: **Active Flights**, **Planned Flights**, and **Histor
 
 When you want one quick overview of everything that can be loaded as a layer (file sources and database tables), open the **Data Panel**.
 
-- The Data Panel opens as a larger separate window centered over the map canvas.
+- The Data Panel opens as a separate window centered over the map canvas.
+- Use the navigation on the left to limit the list to a category, or search across layer names, sources, and categories.
+- Select a layer to inspect its collapsible details and saved views below the list.
 - Each row still supports double-click to load the layer directly.
 - Close the Data Panel to return to the regular configuration workflow.
 
 ### Edit
 
-1. Select the datasource in the tree.
+1. Select the datasource in the left navigation or configuration list.
 2. Click **Edit Source**.
 3. Modify the name, type, or configuration JSON (connection parameters only).
 4. Click **Save**.
@@ -393,7 +427,7 @@ When you want one quick overview of everything that can be loaded as a layer (fi
 
 ### Delete
 
-1. Select the datasource in the tree.
+1. Select the datasource in the left navigation or configuration list.
 2. Click **Delete Source**.
 3. Confirm the deletion in the dialog.
 
