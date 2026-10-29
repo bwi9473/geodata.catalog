@@ -26,6 +26,15 @@ class Datasource:
     config: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
 
+    @property
+    def catalog_id(self) -> str:
+        if self.datasource_type is DatasourceType.ORACLE:
+            return str(self.config.get("catalog_id") or self.id)
+        return self.id
+
+    def catalog_layer_id(self, layer_name: str) -> str:
+        return f"{self.catalog_id}:{layer_name}"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,

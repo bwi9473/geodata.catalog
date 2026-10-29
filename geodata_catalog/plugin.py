@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 from geodata_catalog.exceptions import GeoDataCatalogException
 from geodata_catalog.logging_utils import PluginLogger
 from geodata_catalog.metadata.datasource_repository import DatasourceRepository
-from geodata_catalog.metadata.layer_config_repository import LayerConfigRepository
+from geodata_catalog.metadata.layer_config_repository import LayerConfig, LayerConfigRepository
 from geodata_catalog.metadata.layer_repository import LayerRepository
+from geodata_catalog.metadata.profile_repository import ProfileRepository
 from geodata_catalog.metadata.saved_layer_view_repository import SavedLayerViewRepository
 from geodata_catalog.metadata.settings_manager import SettingsManager
 from geodata_catalog.metadata.system_configuration_repository import (
@@ -15,7 +17,7 @@ from geodata_catalog.metadata.system_configuration_repository import (
     SystemConfigurationRepository,
 )
 from geodata_catalog.models.datasource import Datasource, DatasourceType
-from geodata_catalog.models.layer_definition import LayerDefinition
+from geodata_catalog.models.layer_definition import CatalogRow, LayerDefinition
 from geodata_catalog.models.saved_layer_view import SavedLayerView
 from geodata_catalog.services.datasource_service import DatasourceService
 from geodata_catalog.services.database_session_service import DatabaseSessionService, QgisSessionAuthentication
@@ -37,6 +39,7 @@ from geodata_catalog.ui.layer_config_dialog import LayerConfigDialog
 from geodata_catalog.ui.layer_custom_view_dock import LayerCustomViewDock
 from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
+from geodata_catalog.ui.profile_dialog import ProfileDialog
 
 from qgis.PyQt.QtCore import Qt, QVariant
 from qgis.PyQt.QtXml import QDomDocument
@@ -89,6 +92,10 @@ class GeoDataCatalogPlugin:
         datasource_repository = DatasourceRepository(settings_manager)
         layer_repository = LayerRepository(settings_manager)
         self._saved_layer_view_repository = SavedLayerViewRepository(settings_manager)
+        self._profile_repository = ProfileRepository(settings_manager)
+        self._profiles, active_id = self._profile_repository.load()
+        self._active_profile = next(profile for profile in self._profiles if profile.id == active_id)
+        self._profile_actions: list[QAction] = []
 
         # Per-layer display/search config stored in a separate layer_config.json
         layer_config_path = settings_manager.sibling_file_path("layer_config.json")
@@ -143,6 +150,15 @@ class GeoDataCatalogPlugin:
             self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", self._open_catalog_action)
 
             self._geometry_toolbar.initGui()
+            switch_action = QAction("Switch work profile...", self.iface.mainWindow())
+            manage_action = QAction("Manage user profiles...", self.iface.mainWindow())
+            switch_action.triggered.connect(self._switch_profile)
+            manage_action.triggered.connect(self._manage_profiles)
+            self._profile_actions = [switch_action, manage_action]
+            for action in self._profile_actions:
+                self.iface.addPluginToMenu("GeoData Catalog/GeoData Catalog", action)
+            self._geometry_toolbar.add_profile_actions(switch_action, manage_action)
+            self._update_profile_ui()
             QgsProject.instance().readProject.connect(self._on_database_project_read)
             self._ensure_layer_panel_filter_action()
             self._logger.info("GeoData Catalog initialized")
@@ -165,6 +181,9 @@ class GeoDataCatalogPlugin:
             self._logger.error(f"Database session cleanup failed: {exc}")
             self._show_error("Disconnect database", str(exc))
         self._geometry_toolbar.unload()
+        for action in getattr(self, "_profile_actions", []):
+            self.iface.removePluginMenu("GeoData Catalog/GeoData Catalog", action)
+            action.deleteLater()
 
         if self._dock_widget is not None:
             self.iface.removeDockWidget(self._dock_widget)
@@ -301,7 +320,7 @@ class GeoDataCatalogPlugin:
             self._loaded_layer_keys.add(f"{source_id}:{name}")
 
     def _refresh_connection_views(self) -> None:
-        if self._dock_widget is not None:
+        if self._dock_widget is not None and self._active_profile.is_developer:
             self._refresh_datasources()
         elif self._loadable_layers_dock is not None:
             self._refresh_all_layers_view()
@@ -326,6 +345,8 @@ class GeoDataCatalogPlugin:
                 self._apply_configured_theme(widget)
 
     def _show_dock(self) -> None:
+        if not self._require_developer():
+            return
         if self._dock_widget is None:
             self._dock_widget = CatalogDockWidget(self.iface.mainWindow())
             self._dock_widget.add_source_requested.connect(self._on_add_source)
@@ -343,6 +364,166 @@ class GeoDataCatalogPlugin:
         self._center_on_map_canvas(self._dock_widget)
         self._refresh_datasources()
         self._ensure_layer_panel_filter_action()
+
+    def _require_developer(self) -> bool:
+        if self._active_profile.is_developer:
+            return True
+        self._show_error("Developer work profile required", "Switch to Developer to change configuration.")
+        return False
+
+    def _update_profile_ui(self) -> None:
+        developer = self._active_profile.is_developer
+        self._open_catalog_action.setVisible(developer)
+        self._geometry_toolbar.set_configuration_visible(developer)
+        if self._profile_actions:
+            self._profile_actions[0].setText(f"Work profile: {self._active_profile.name}...")
+            self._profile_actions[1].setVisible(developer)
+        if not developer and self._dock_widget is not None:
+            self._dock_widget.close()
+
+    def _switch_profile(self) -> None:
+        labels = [f"{profile.name} ({profile.role})" for profile in self._profiles]
+        current = self._profiles.index(self._active_profile)
+        label, accepted = QInputDialog.getItem(
+            self.iface.mainWindow(), "Switch work profile",
+            "Freely selectable work mode (not access control):", labels, current, False,
+        )
+        if not accepted:
+            return
+        profile = self._profiles[labels.index(label)]
+        try:
+            self._profile_repository.save(self._profiles, profile.id)
+        except GeoDataCatalogException as exc:
+            self._show_error("Switch work profile", str(exc))
+            return
+        self._active_profile = profile
+        self._layer_cache.clear()
+        self._update_profile_ui()
+        self._refresh_connection_views()
+        if not profile.is_developer:
+            self._show_loadable_layers_dock()
+
+    def _manage_profiles(self) -> None:
+        if not self._require_developer():
+            return
+        choices: dict[str, str] = {}
+        definitions: dict[str, LayerDefinition] = {}
+        try:
+            for source in self._datasource_service.list_datasources():
+                try:
+                    layers = self._layer_service.discover_layers(source, include_stats=False)
+                except GeoDataCatalogException as exc:
+                    self._logger.warning(f"Profile layer discovery for '{source.name}': {exc}")
+                    layers = self._layer_service.configured_layers(source)
+                for layer in layers:
+                    key = source.catalog_layer_id(layer.layer_name)
+                    choices[key] = f"{layer.display_name} [{key}]"
+                    definitions[key] = layer
+            dialog = ProfileDialog(
+                self._profiles, sorted(choices.items(), key=lambda item: item[1].casefold()),
+                self.iface.mainWindow(),
+            )
+            if self._run_dialog(dialog) != self._accepted_code(dialog):
+                return
+            selected = {
+                key for profile in dialog.profiles if not profile.is_developer
+                for key in profile.visible_layer_ids or []
+            }
+            for key in sorted(selected):
+                if key in definitions:
+                    self._layer_service.save_layer_configuration(definitions[key])
+            self._profile_repository.save(dialog.profiles, self._active_profile.id)
+            self._profiles = dialog.profiles
+            self._active_profile = next(profile for profile in self._profiles if profile.id == self._active_profile.id)
+        except GeoDataCatalogException as exc:
+            self._show_error("User profiles", str(exc))
+            return
+        self._update_profile_ui()
+        self._refresh_connection_views()
+
+    def _can_view_layer(self, datasource_id: str, layer_name: str) -> bool:
+        source = self._datasource_service.get_datasource(datasource_id)
+        return self._active_profile.can_view(source.catalog_layer_id(layer_name))
+
+    def _migrate_profile_visibility(self, old_catalog_id: str, new_catalog_id: str) -> None:
+        keep_old = any(
+            source.catalog_id == old_catalog_id
+            for source in self._datasource_service.list_datasources()
+        )
+        profiles = []
+        prefix = f"{old_catalog_id}:"
+        for profile in self._profiles:
+            visible = profile.visible_layer_ids
+            if visible is not None:
+                keys = set(visible) if keep_old else {key for key in visible if not key.startswith(prefix)}
+                keys.update(f"{new_catalog_id}:{key[len(prefix):]}" for key in visible if key.startswith(prefix))
+                visible = sorted(keys)
+            profiles.append(replace(profile, visible_layer_ids=visible))
+        self._profile_repository.save(profiles, self._active_profile.id)
+        self._profiles = profiles
+        self._active_profile = next(profile for profile in profiles if profile.id == self._active_profile.id)
+
+    def _catalog_datasources(self) -> list[Datasource]:
+        sources = self._datasource_service.list_datasources()
+        active = self._database_session.datasource
+        selected: dict[str, Datasource] = {}
+        for source in sources:
+            previous = selected.get(source.catalog_id)
+            if previous is None or (not previous.enabled and source.enabled):
+                selected[source.catalog_id] = source
+            if active is not None and source.id == active.id:
+                selected[source.catalog_id] = source
+        return list(selected.values())
+
+    def _catalog_rows(self) -> list[CatalogRow]:
+        rows: list[CatalogRow] = []
+        for source in self._catalog_datasources():
+            try:
+                layers = self._layer_service.discover_layers(source, include_stats=False)
+            except GeoDataCatalogException as exc:
+                self._logger.warning(f"Datasource '{source.name}' unavailable: {exc}")
+                layers = self._fallback_layers_for_unavailable_datasource(source)
+            self._layer_cache[source.id] = {layer.layer_name: layer for layer in layers}
+            for layer in layers:
+                if not self._can_view_layer(source.id, layer.layer_name):
+                    continue
+                unavailable = bool(layer.metadata.get("unavailable"))
+                rows.append({
+                    "datasource_id": source.id,
+                    "source_name": source.name,
+                    "source_type": source.datasource_type.value,
+                    "layer": layer,
+                    "loadable": not unavailable,
+                    "business_group": layer.business_group,
+                    "availability_reason": str(layer.metadata.get("unavailable_reason", "")),
+                })
+        return rows
+
+    def _visible_saved_views(self) -> list[SavedLayerView]:
+        sources = {source.id: source for source in self._datasource_service.list_datasources()}
+        selected = {source.catalog_id: source for source in self._catalog_datasources()}
+        views: list[SavedLayerView] = []
+        for view in self._saved_layer_view_repository.list_all():
+            source = sources.get(view.datasource_id)
+            catalog_id = view.catalog_id or (source.catalog_id if source is not None else "")
+            target = selected.get(catalog_id)
+            if target is None:
+                continue
+            if self._can_view_layer(target.id, view.layer_name):
+                views.append(replace(view, datasource_id=target.id))
+        return views
+
+    def _migrate_saved_view_catalog(self, source: Datasource) -> None:
+        self._saved_layer_view_repository.set_catalog_id(source.id, source.catalog_id)
+
+    def _ensure_layer_access(self, datasource_id: str, layer_name: str) -> None:
+        if not self._can_view_layer(datasource_id, layer_name):
+            raise GeoDataCatalogException("This layer is not visible in the selected work profile.")
+        layer = self._resolve_layer(datasource_id, layer_name)
+        if layer.metadata.get("unavailable"):
+            raise GeoDataCatalogException(str(layer.metadata.get(
+                "unavailable_reason", "Source not available for this layer."
+            )))
 
     def _show_loadable_layers_dock(self) -> None:
         if self._loadable_layers_dock is None:
@@ -490,6 +671,8 @@ class GeoDataCatalogPlugin:
             apply_theme(self._load_ui_colors())
 
     def _export_layer_configuration(self) -> None:
+        if not self._require_developer():
+            return
         file_path, _ = QFileDialog.getSaveFileName(
             self.iface.mainWindow(),
             "Export Layer Configuration",
@@ -518,10 +701,8 @@ class GeoDataCatalogPlugin:
         if any(value is None for value in (QgsFeature, QgsField, QgsVectorFileWriter, QgsVectorLayer)):
             raise RuntimeError("The QGIS Excel export service is not available in this runtime.")
 
-        datasources = {
-            datasource.id: datasource
-            for datasource in self._datasource_service.list_datasources()
-        }
+        sources = self._datasource_service.list_datasources()
+        datasources = {source.catalog_id: source for source in sources}
         fields = [
             ("Layer name", "layer_name"),
             ("Category", "category"),
@@ -537,7 +718,11 @@ class GeoDataCatalogPlugin:
         layer.updateFields()
 
         features = []
-        for config in self._layer_config_repository.list_all():
+        configs: dict[str, LayerConfig] = {}
+        for source in sources:
+            for config in self._layer_service.display_configurations(source):
+                configs[config.key()] = config
+        for config in configs.values():
             datasource = datasources.get(config.datasource_id)
             source_name = (
                 self._layer_config_export_source_label(datasource, config)
@@ -814,12 +999,15 @@ class GeoDataCatalogPlugin:
             try:
                 layers = self._layer_service.discover_layers(datasource, include_stats=False)
             except GeoDataCatalogException as exc:
-                layers = self._fallback_layers_for_unavailable_datasource(datasource)
-                if layers:
-                    self._logger.warning(
-                        f"Datasource unavailable while building catalog tree for "
-                        f"'{datasource.name}': {exc}"
-                    )
+                try:
+                    layers = self._fallback_layers_for_unavailable_datasource(datasource)
+                except GeoDataCatalogException as configuration_error:
+                    self._show_error("Layer Configuration", str(configuration_error))
+                    layers = []
+                self._logger.warning(
+                    f"Datasource unavailable while building catalog tree for "
+                    f"'{datasource.name}': {exc}"
+                )
             layers_by_datasource[datasource.id] = layers
             self._layer_cache[datasource.id] = {
                 layer.layer_name: layer for layer in layers
@@ -829,6 +1017,8 @@ class GeoDataCatalogPlugin:
             self._refresh_all_layers_view()
 
     def _on_add_source(self) -> None:
+        if not self._require_developer():
+            return
         dialog = DatasourceDialog(self.iface.mainWindow())
         if self._run_dialog(dialog) != self._accepted_code(dialog):
             return
@@ -840,24 +1030,34 @@ class GeoDataCatalogPlugin:
             self._show_error("Add Datasource", str(exc))
 
     def _on_edit_source(self, datasource_id: str) -> None:
+        if not self._require_developer():
+            return
         datasource = self._datasource_service.get_datasource(datasource_id)
         dialog = DatasourceDialog(self.iface.mainWindow(), datasource=datasource)
         if self._run_dialog(dialog) != self._accepted_code(dialog):
             return
         try:
             name, datasource_type, config = dialog.get_payload()
+            old_catalog_id = datasource.catalog_id
             if self._database_session.is_connected(datasource):
                 if not self._disconnect_database():
                     return
             datasource.name = name
             datasource.datasource_type = datasource_type
             datasource.config = config
+            self._layer_service.promote_configuration(datasource, old_catalog_id)
             self._datasource_service.update_datasource(datasource)
+            self._migrate_saved_view_catalog(datasource)
+            if old_catalog_id != datasource.catalog_id:
+                self._migrate_profile_visibility(old_catalog_id, datasource.catalog_id)
+            self._layer_cache.clear()
             self._refresh_datasources()
         except GeoDataCatalogException as exc:
             self._show_error("Edit Datasource", str(exc))
 
     def _on_delete_source(self, datasource_id: str) -> None:
+        if not self._require_developer():
+            return
         yes_button = self._messagebox_yes_button()
         no_button = self._messagebox_no_button()
         answer = QMessageBox.question(
@@ -874,8 +1074,13 @@ class GeoDataCatalogPlugin:
             if self._database_session.is_connected(datasource):
                 if not self._disconnect_database():
                     return
+            if datasource.catalog_id != datasource.id:
+                self._layer_service.promote_configuration(datasource)
+                self._migrate_saved_view_catalog(datasource)
             self._datasource_service.delete_datasource(datasource_id)
-            self._layer_config_repository.delete_by_datasource(datasource_id)
+            # Shared catalog settings survive removal of an environment.
+            if datasource.catalog_id == datasource.id:
+                self._layer_config_repository.delete_by_datasource(datasource_id)
             self._layer_cache.pop(datasource_id, None)
             self._refresh_datasources()
             if self._dock_widget is not None:
@@ -902,7 +1107,13 @@ class GeoDataCatalogPlugin:
                 # The selection may have fired while a datasource was being deleted.
                 self._layer_cache.pop(datasource_id, None)
                 return
-            fallback_layers = self._fallback_layers_for_unavailable_datasource(datasource)
+            try:
+                fallback_layers = self._fallback_layers_for_unavailable_datasource(datasource)
+            except GeoDataCatalogException as configuration_error:
+                self._layer_cache.pop(datasource_id, None)
+                self._dock_widget.set_layers(datasource_id, [])
+                self._show_error("Layer Configuration", str(configuration_error))
+                return
             if fallback_layers:
                 self._layer_cache[datasource_id] = {
                     layer.layer_name: layer for layer in fallback_layers
@@ -929,45 +1140,8 @@ class GeoDataCatalogPlugin:
         """Build a combined list of loadable layers from all datasources."""
         if self._loadable_layers_dock is None:
             return
-        rows: list[dict[str, str | LayerDefinition]] = []
         try:
-            datasources = self._datasource_service.list_datasources()
-            for datasource in datasources:
-                unavailable = False
-                try:
-                    # Panel listing only needs names; skip expensive per-layer stats.
-                    layers = self._layer_service.discover_layers(datasource, include_stats=False)
-                except GeoDataCatalogException as exc:
-                    layers = self._fallback_layers_for_unavailable_datasource(datasource)
-                    unavailable = bool(layers)
-                    if unavailable:
-                        self._logger.warning(
-                            "Datasource unavailable during all-layers refresh; using fallback layers for "
-                            f"'{datasource.name}': {exc}"
-                        )
-                    else:
-                        self._logger.warning(
-                            f"Datasource '{datasource.name}' unavailable and no fallback layers exist: {exc}"
-                        )
-
-                self._layer_cache[datasource.id] = {layer.layer_name: layer for layer in layers}
-                for layer in layers:
-                    business_group = (
-                        "Database not available"
-                        if unavailable and datasource.datasource_type is DatasourceType.ORACLE
-                        else layer.business_group
-                    )
-                    rows.append(
-                        {
-                            "datasource_id": datasource.id,
-                            "source_name": datasource.name,
-                            "source_type": datasource.datasource_type.value,
-                            "layer": layer,
-                            "loadable": not unavailable,
-                            "business_group": business_group,
-                            "availability_reason": "Database not available" if unavailable else "",
-                        }
-                    )
+            rows = self._catalog_rows()
             rows.sort(
                 key=lambda r: (
                     str(r.get("availability_reason", "")).casefold(),
@@ -979,17 +1153,16 @@ class GeoDataCatalogPlugin:
                 rows,
                 self._loaded_layer_keys,
                 "#2777B5",
-                self._saved_layer_view_repository.list_all(),
+                self._visible_saved_views(),
             )
             self._logger.info(f"All-layers view refreshed with {len(rows)} loadable layers")
         except GeoDataCatalogException as exc:
+            self._loadable_layers_dock.set_rows([], self._loaded_layer_keys, "#2777B5", [])
             self._show_error("Refresh All Layers", str(exc))
 
     def _on_load_layer(self, datasource_id: str, layer_name: str) -> None:
         try:
-            if self._is_layer_marked_unavailable(datasource_id, layer_name):
-                self._show_error("Load Layer", "Database not available for this layer.")
-                return
+            self._ensure_layer_access(datasource_id, layer_name)
             datasource = self._datasource_service.get_datasource(datasource_id)
             connector = self._datasource_service.get_connector(datasource)
             layer_definition = self._resolve_layer(datasource_id, layer_name)
@@ -998,7 +1171,8 @@ class GeoDataCatalogPlugin:
             if detected_geometry_type:
                 layer_definition.geometry_type = detected_geometry_type
                 layer_definition.metadata["geometry_type"] = detected_geometry_type
-                self._layer_service.save_layer_configuration(layer_definition)
+                if self._active_profile.is_developer:
+                    self._layer_service.save_layer_configuration(layer_definition)
             self._layer_toolbox_service.ensure_default_basemap_for_empty_project()
             self._loaded_layer_keys.add(layer_definition.key())
             if self._loadable_layers_dock is not None:
@@ -1042,7 +1216,7 @@ class GeoDataCatalogPlugin:
                     for datasource_id, layer_name, display_name in choices
                 ]
         existing_names: dict[str, list[str]] = {}
-        for view in self._saved_layer_view_repository.list_all():
+        for view in self._visible_saved_views():
             existing_names.setdefault(f"{view.datasource_id}:{view.layer_name}", []).append(view.name)
         dialog = SaveLayerViewDialog(
             self.iface.mainWindow(), choices, selected_key, existing_names
@@ -1118,9 +1292,8 @@ class GeoDataCatalogPlugin:
     def _save_layer_view(self, layer, definition: LayerDefinition) -> None:
         existing_names = [
             view.name
-            for view in self._saved_layer_view_repository.list_by_layer(
-                definition.datasource_id, definition.layer_name
-            )
+            for view in self._visible_saved_views()
+            if view.datasource_id == definition.datasource_id and view.layer_name == definition.layer_name
         ]
         dialog = SaveLayerViewDialog(
             self.iface.mainWindow(),
@@ -1136,6 +1309,10 @@ class GeoDataCatalogPlugin:
             self._persist_layer_view(layer, definition, dialog.view_name())
 
     def _persist_layer_view(self, layer, definition: LayerDefinition, name: str) -> None:
+        source = self._datasource_service.get_datasource(definition.datasource_id)
+        for peer in self._datasource_service.list_datasources():
+            if peer.catalog_id == source.catalog_id:
+                self._migrate_saved_view_catalog(peer)
         self._saved_layer_view_repository.upsert(
             SavedLayerView(
                 datasource_id=definition.datasource_id,
@@ -1146,17 +1323,19 @@ class GeoDataCatalogPlugin:
                 grouping=self._layer_groupings.get(self._qgis_layer_id(layer), {"kind": "none"}),
                 updated_at="",
                 style_state=self._serialize_layer_style(layer),
+                catalog_id=source.catalog_id,
             )
         )
         self._refresh_all_layers_view()
         self._logger.info(f"Saved layer view '{name}' for '{definition.display_name}'.")
 
     def _apply_saved_layer_view(self, view_id: str) -> None:
-        view = next((item for item in self._saved_layer_view_repository.list_all() if item.id == view_id), None)
+        view = next((item for item in self._visible_saved_views() if item.id == view_id), None)
         if view is None:
             self._show_error("Saved Layer View", "This saved view no longer exists.")
             return
         try:
+            self._ensure_layer_access(view.datasource_id, view.layer_name)
             definition = self._resolve_layer(view.datasource_id, view.layer_name)
         except GeoDataCatalogException as exc:
             self._show_error("Saved Layer View", str(exc))
@@ -1252,14 +1431,10 @@ class GeoDataCatalogPlugin:
         )
 
     def _available_layer_choices(self) -> list[tuple[str, str, str]]:
-        choices: list[tuple[str, str, str]] = []
-        for datasource in self._datasource_service.list_datasources():
-            try:
-                layers = self._layer_service.discover_layers(datasource)
-            except GeoDataCatalogException:
-                layers = self._fallback_layers_for_unavailable_datasource(datasource)
-            self._layer_cache[datasource.id] = {layer.layer_name: layer for layer in layers}
-            choices.extend((layer.datasource_id, layer.layer_name, layer.display_name) for layer in layers)
+        choices = [
+            (row["layer"].datasource_id, row["layer"].layer_name, row["layer"].display_name)
+            for row in self._catalog_rows() if row["loadable"]
+        ]
         return sorted(choices, key=lambda item: item[2].casefold())
 
     def _find_qgis_layer(self, definition: LayerDefinition):
@@ -1305,16 +1480,11 @@ class GeoDataCatalogPlugin:
             return None
 
     def _loaded_catalog_layer_choices(self) -> list[tuple[str, str, str]]:
-        choices: list[tuple[str, str, str]] = []
-        for datasource in self._datasource_service.list_datasources():
-            try:
-                layers = self._layer_service.discover_layers(datasource)
-            except GeoDataCatalogException:
-                layers = self._fallback_layers_for_unavailable_datasource(datasource)
-            self._layer_cache[datasource.id] = {layer.layer_name: layer for layer in layers}
-            for layer in layers:
-                if self._find_qgis_layer(layer) is not None:
-                    choices.append((layer.datasource_id, layer.layer_name, layer.display_name))
+        choices = [
+            (row["layer"].datasource_id, row["layer"].layer_name, row["layer"].display_name)
+            for row in self._catalog_rows()
+            if row["loadable"] and self._find_qgis_layer(row["layer"]) is not None
+        ]
         return sorted(choices, key=lambda item: item[2].casefold())
 
     @staticmethod
@@ -1402,9 +1572,15 @@ class GeoDataCatalogPlugin:
 
     def _on_edit_layer_config(self, datasource_id: str, layer_name: str) -> None:
         """Open the per-layer config dialog and persist the result."""
-        layer_def = self._resolve_layer(datasource_id, layer_name)
-        datasource = self._datasource_service.get_datasource(datasource_id)
-        existing_config = self._layer_config_repository.get(datasource_id, layer_name)
+        if not self._require_developer():
+            return
+        try:
+            layer_def = self._resolve_layer(datasource_id, layer_name)
+            datasource = self._datasource_service.get_datasource(datasource_id)
+            existing_config = self._layer_service.get_display_configuration(datasource, layer_name)
+        except GeoDataCatalogException as exc:
+            self._show_error("Layer Configuration", str(exc))
+            return
 
         dialog = LayerConfigDialog(
             self.iface.mainWindow(),
@@ -1422,12 +1598,14 @@ class GeoDataCatalogPlugin:
 
         try:
             config = dialog.get_config()
-            self._layer_config_repository.save(config)
+            self._layer_service.save_display_configuration(datasource, config)
+            self._layer_service.save_layer_configuration(layer_def)
         except (GeoDataCatalogException, OSError) as exc:
             self._show_error("Layer Configuration", f"Unable to save layer configuration: {exc}")
             return
         # Invalidate cache so next Refresh picks up the new config
-        self._layer_cache.pop(datasource_id, None)
+        self._layer_cache.clear()
+        self._refresh_connection_views()
         self._logger.info(
             f"Layer config saved for '{layer_def.display_name}': "
             f"label_column={config.label_column}, "
@@ -1905,13 +2083,16 @@ class GeoDataCatalogPlugin:
         )
 
     def _fallback_layers_for_unavailable_datasource(self, datasource) -> list[LayerDefinition]:
-        configured_layers = self._layer_service.list_configured_layers(datasource.id)
+        configured_layers = self._layer_service.configured_layers(datasource)
         fallback: list[LayerDefinition] = []
         for layer in configured_layers:
             fallback_layer = LayerDefinition.from_dict(layer.to_dict())
-            fallback_layer.business_group = "Database not available"
             fallback_layer.metadata["unavailable"] = True
-            fallback_layer.metadata["unavailable_reason"] = "Database not available"
+            fallback_layer.metadata["unavailable_reason"] = (
+                "Database not connected or not accessible."
+                if datasource.datasource_type is DatasourceType.ORACLE
+                else "Datasource not accessible."
+            )
             fallback.append(fallback_layer)
         return fallback
 

@@ -158,6 +158,7 @@ The Oracle connector discovers all spatial tables, views and materialized views 
 | `host` | ✅ | string | — | Oracle server hostname or IP address |
 | `port` | | integer | `1521` | Oracle listener port |
 | `service_name` | ✅ | string | — | Oracle service name (e.g. `ORCLCDB`) |
+| `catalog_id` | | string | datasource ID | Shared logical catalog key for environments with identical schema/table and geometry-column names. Layer configuration and profile visibility use this key; credentials and runtime URIs remain environment-specific. |
 | `username` | ✅ | string | — | Database username |
 | `password` | ✅ | string | — | Database password |
 | `schema` | | string | `null` | Restrict discovery to a single schema/owner. When omitted, all accessible spatial objects are listed. |

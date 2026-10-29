@@ -94,6 +94,13 @@ class DatasourceDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(QLabel("Connection Configuration (JSON)"))
         layout.addWidget(self._config_edit, stretch=1)
+        catalog_hint = QLabel(
+            "Oracle environments with identical schema/table names can share a catalog_id "
+            "in the JSON configuration. Use the same value in each environment to share "
+            "layer configuration and profile visibility. Omit it to keep a source independent."
+        )
+        catalog_hint.setWordWrap(True)
+        layout.addWidget(catalog_hint)
 
         button_bar = QHBoxLayout()
         button_bar.addStretch(1)

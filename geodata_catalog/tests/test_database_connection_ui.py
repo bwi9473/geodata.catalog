@@ -6,6 +6,7 @@ import pytest
 from geodata_catalog import plugin as plugin_module
 from geodata_catalog.exceptions import DatasourceConnectionException
 from geodata_catalog.models.datasource import Datasource, DatasourceType
+from geodata_catalog.models.user_profile import UserProfile
 from geodata_catalog.plugin import GeoDataCatalogPlugin
 from geodata_catalog.ui import geometry_toolbar as toolbar_module
 from geodata_catalog.ui.geometry_toolbar import GeometryToolbar, _enum, contrasting_text_color
@@ -69,6 +70,8 @@ def connection_plugin(monkeypatch):
     question = Mock(return_value=1)
     monkeypatch.setattr(plugin_module, "QMessageBox", SimpleNamespace(question=question))
     plugin = GeoDataCatalogPlugin.__new__(GeoDataCatalogPlugin)
+    plugin._active_profile = UserProfile("developer", "Developer", "developer")
+    plugin._profile_actions = []
     plugin._database_session = SimpleNamespace(
         datasource=source, username="user", disconnect=Mock(),
         is_connected=lambda candidate: candidate.id == "db",

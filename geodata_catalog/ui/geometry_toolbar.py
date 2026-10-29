@@ -560,6 +560,14 @@ class GeometryToolbar:
         if canvas is not None:
             canvas.mapToolSet.connect(self._on_map_tool_set)
 
+    def set_configuration_visible(self, visible: bool) -> None:
+        if self._configuration_action is not None:
+            self._configuration_action.setVisible(visible)
+
+    def add_profile_actions(self, switch_action, manage_action) -> None:
+        self._toolbar.addAction(switch_action)
+        self._toolbar.addAction(manage_action)
+
     def set_database_connection(self, label: str = "", color: str = "#F8FBFF", tooltip: str = "") -> None:
         if self._toolbar is None or self._connection_label is None:
             return

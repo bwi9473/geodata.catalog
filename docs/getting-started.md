@@ -80,6 +80,66 @@ Use **Interactive Marker** on the GeoData Geometry Toolbox toolbar:
 - Right-click the toolbar button and choose **Change marker position...** to select and save a new position on the map.
 - Right-click the map while selecting a position to cancel. The previous saved position is kept.
 
+## Work profiles and layer visibility
+
+The plugin initially selects **User**. The toolbar and plugin menu contain
+**Work profile: User...**; choose **Developer** to access Data Source Configuration
+and **Manage user profiles...**. The last selected profile is remembered.
+
+Developer always sees all catalog layers and configuration actions. In
+**Manage user profiles...**, choose an existing user profile or add a named one:
+
+- Leave **All catalog layers (including future layers)** checked to retain the
+  existing unrestricted catalog browsing behavior.
+- Uncheck it to choose individual layers. Selecting none gives an empty catalog.
+- Use **Uncheck all** to clear every layer selection for the current profile,
+  including layers not currently listed. This also turns off **All catalog layers**.
+- Save, then switch to that profile to see its Data Panel.
+
+Layer loading, filters, styles, map tools and saved views keep their existing behavior
+for visible, available layers. Saved views of hidden layers are hidden as well.
+Changing profile does not delete layers already loaded into the QGIS project.
+
+These are freely selectable application work modes, not user authentication,
+QGIS user profiles, or database authorization. Profiles and their visibility rules
+are stored locally in the plugin's `config.json` (and QSettings), under
+`user_profiles`. Database credentials remain separate in QGIS Authentication Manager.
+This version does not provide central profile distribution or account synchronization.
+
+### Sharing a catalog between Oracle environments
+
+Add the same explicit `catalog_id` to each related Oracle source's connection JSON,
+for example `"catalog_id": "aviation"`. Keep each environment's own host, service,
+schema and environment color. Sources without `catalog_id` remain independent.
+Only group environments whose schema/table or view names and geometry columns match.
+
+The logical layer ID becomes `aviation:SCHEMA.TABLE`; it does not contain credentials,
+host or service. Connect to the required environment using **Connect**. The Data Panel
+shows each catalog once, targeting the connected environment rather than listing
+duplicate development/production copies. Independent file and REST sources are unchanged.
+
+Existing per-endpoint configuration remains readable. Editing a source copies its
+legacy settings to its catalog key; editing a layer thereafter saves one shared
+configuration. Original entries are retained, and shared entries take precedence.
+Conflicting legacy display/search settings are reported explicitly: align those
+settings before grouping the environments. Profile layer selections follow changes
+to a source's catalog key. Shared settings survive removal of an environment.
+
+Saved views follow the selected environment too. Their styles and filters are not
+reconfigured; the current endpoint and login are used when loading. Views from
+hidden layers cannot be loaded through the panel.
+
+Configured but unavailable layers stay in their normal category, marked
+**Not available**. Select one to read the reason; the Load button is disabled:
+
+- **Source not found or not accessible with this database login** means discovery
+  succeeded but did not find that configured source. A missing object cannot always
+  be distinguished from insufficient Oracle privileges.
+- **Database not connected or not accessible** means the source could not be queried.
+
+Refresh/reopen the Data Panel after a database change to recheck availability.
+Catalog visibility never grants database privileges, including in Developer mode.
+
 ## Your First Layer — KML file
 
 The plugin ships with a sample KML file located at:
@@ -90,7 +150,7 @@ geodata_catalog/resources/aerodromes_sample.kml
 
 ### Step 1 — Add a datasource
 
-1. Click **Add Source** in the GeoData Catalog panel.
+1. Switch to **Developer**, open **Data Source Configuration**, and click **Add Source**.
 2. Fill in the dialog:
    - **Name:** `Aerodromes KML`
    - **Type:** `KML`
@@ -114,8 +174,8 @@ geodata_catalog/resources/aerodromes_sample.kml
 
 ### Step 3 — Load a layer
 
-- Double-click a layer in the layers list, **or**
-- Select the layer and click **Load Layer**.
+Open the **Data Panel** using **Choose map layers**. Double-click a layer, or select
+it and click **Load default layer**. You can switch to a user profile before loading.
 
 The layer is added to the QGIS **Layers** panel and rendered on the map canvas.
 
