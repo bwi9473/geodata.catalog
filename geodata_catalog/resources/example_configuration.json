@@ -9,8 +9,8 @@
         "host": "oracle-host",
         "port": 1521,
         "service_name": "ORCLCDB",
-        "username": "GIS_USER",
-        "password": "<secret>",
+        "environment": "Development",
+        "environment_color": "#59A947",
         "schema": "AIRSPACE"
       }
     },

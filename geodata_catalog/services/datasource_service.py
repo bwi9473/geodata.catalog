@@ -13,6 +13,7 @@ from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.logging_utils import PluginLogger
 from geodata_catalog.metadata.datasource_repository import DatasourceRepository
 from geodata_catalog.models.datasource import Datasource, DatasourceType
+from geodata_catalog.services.database_session_service import DatabaseSessionService, validate_database_config
 
 ConnectorFactory = Callable[[Datasource], BaseConnector]
 
@@ -23,6 +24,7 @@ class DatasourceService:
     def __init__(self, repository: DatasourceRepository, logger: PluginLogger) -> None:
         self._repository = repository
         self._logger = logger
+        self.database_session: DatabaseSessionService | None = None
 
     def list_datasources(self) -> list[Datasource]:
         return self._repository.list_all()
@@ -34,6 +36,8 @@ class DatasourceService:
         config: dict[str, Any],
         enabled: bool = True,
     ) -> Datasource:
+        if datasource_type is DatasourceType.ORACLE:
+            validate_database_config(config)
         datasource = Datasource(
             id=str(uuid.uuid4()),
             name=name,
@@ -46,6 +50,8 @@ class DatasourceService:
         return datasource
 
     def update_datasource(self, datasource: Datasource) -> None:
+        if datasource.datasource_type is DatasourceType.ORACLE:
+            validate_database_config(datasource.config)
         self._repository.upsert(datasource)
         self._logger.info(f"Datasource updated: {datasource.name}")
 
@@ -62,6 +68,8 @@ class DatasourceService:
         return datasource
 
     def get_connector(self, datasource: Datasource) -> BaseConnector:
+        if not datasource.enabled:
+            raise ConfigurationException(f"Datasource '{datasource.name}' is disabled.")
         connector_map: dict[DatasourceType, type[BaseConnector]] = {
             DatasourceType.ORACLE: OracleConnector,
             DatasourceType.GEOJSON: GeoJsonConnector,
@@ -73,7 +81,12 @@ class DatasourceService:
             raise ConfigurationException(
                 f"Unsupported datasource type: {datasource.datasource_type.value}"
             )
-        return connector_type(datasource.id, datasource.config)
+        config = datasource.config
+        if datasource.datasource_type is DatasourceType.ORACLE:
+            if self.database_session is None:
+                raise ConfigurationException("Database login is required.")
+            config = self.database_session.connector_config(datasource)
+        return connector_type(datasource.id, config)
 
     def test_datasource(self, datasource_id: str) -> bool:
         datasource = self.get_datasource(datasource_id)

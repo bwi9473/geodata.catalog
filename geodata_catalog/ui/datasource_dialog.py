@@ -5,6 +5,8 @@ from typing import Any
 
 from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.models.datasource import Datasource, DatasourceType
+from geodata_catalog.services.database_session_service import validate_database_config
+from geodata_catalog.ui.geometry_toolbar import _enum
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
@@ -21,17 +23,17 @@ from qgis.PyQt.QtWidgets import (
 )
 
 
-USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
-TEXTEDIT_NO_WRAP = getattr(QTextEdit, "NoWrap", QTextEdit.LineWrapMode.NoWrap)
+USER_ROLE = _enum(Qt, "ItemDataRole", "UserRole")
+TEXTEDIT_NO_WRAP = _enum(QTextEdit, "LineWrapMode", "NoWrap")
 
 DATASOURCE_CONFIG_TEMPLATES: dict[DatasourceType, dict[str, Any]] = {
     DatasourceType.ORACLE: {
         "host": "oracle.example.com",
         "port": 1521,
         "service_name": "ORCLCDB",
-        "username": "",
-        "password": "",
         "schema": "",
+        "environment": "Development",
+        "environment_color": "#59A947",
     },
     DatasourceType.GEOJSON: {
         "path": "C:/GIS/data/dataset.geojson",
@@ -52,7 +54,8 @@ class DatasourceDialog(QDialog):
     """UI dialog for creating or editing datasource connection definitions.
 
     This dialog is intentionally limited to connection parameters (host, path,
-    credentials, etc.).  Per-layer display settings such as ``label_column`` and
+    environment, etc.). Credentials are entered separately using Connect.
+    Per-layer display settings such as ``label_column`` and
     ``searchable_columns`` are managed via the right-click **Edit Layer Config**
     menu on individual layers.
     """
@@ -161,6 +164,8 @@ class DatasourceDialog(QDialog):
 
         if not isinstance(config, dict):
             raise ConfigurationException("Datasource configuration must be a JSON object.")
+        if datasource_type is DatasourceType.ORACLE:
+            validate_database_config(config)
 
         return name, datasource_type, config
 
@@ -171,5 +176,3 @@ class DatasourceDialog(QDialog):
             QMessageBox.warning(self, "Datasource", str(exc))
             return
         super().accept()
-
-
