@@ -1,8 +1,61 @@
+from unittest.mock import Mock
+
 import pytest
 
 import geodata_catalog.connectors.oracle_connector as oracle_connector_module
 from geodata_catalog.connectors.oracle_connector import OracleConnector
-from geodata_catalog.exceptions import LayerLoadException
+from geodata_catalog.exceptions import DatasourceConnectionException, LayerLoadException
+
+
+@pytest.mark.parametrize("stage", ["makedsn", "connect", "query"])
+def test_oracle_connection_failure_preserves_driver_details(monkeypatch, stage):
+    failure = RuntimeError("DPY-6005: cannot connect to database")
+    failure.__cause__ = TimeoutError("Connection timed out")
+    driver = Mock()
+    driver.connect.return_value = FakeConnection()
+    if stage == "query":
+        monkeypatch.setattr(FakeCursor, "execute", Mock(side_effect=failure))
+    else:
+        getattr(driver, stage).side_effect = failure
+    monkeypatch.setattr(oracle_connector_module, "oracledb", driver)
+    connector = OracleConnector("db", {
+        "host": "db.example.com", "service_name": "GIS",
+        "username": "user", "password": "private-secret",
+    })
+
+    with pytest.raises(DatasourceConnectionException) as caught:
+        connector.test_connection()
+
+    message = str(caught.value)
+    assert "Failed to connect to Oracle datasource." in message
+    assert "RuntimeError: DPY-6005: cannot connect to database" in message
+    assert "TimeoutError: Connection timed out" in message
+    assert caught.value.__cause__ is failure
+    assert "private-secret" not in message
+
+
+@pytest.mark.parametrize("stage", ["connect", "query"])
+def test_oracle_connection_error_redacts_password_in_driver_and_cause(monkeypatch, stage):
+    failure = RuntimeError("ORA-01017: invalid login: private-secret")
+    failure.__cause__ = ValueError("Credentials contained private-secret")
+    driver = Mock()
+    driver.connect.return_value = FakeConnection()
+    if stage == "query":
+        monkeypatch.setattr(FakeCursor, "execute", Mock(side_effect=failure))
+    else:
+        driver.connect.side_effect = failure
+    monkeypatch.setattr(oracle_connector_module, "oracledb", driver)
+    connector = OracleConnector("db", {
+        "host": "db.example.com", "service_name": "GIS",
+        "username": "user", "password": "private-secret",
+    })
+
+    with pytest.raises(DatasourceConnectionException) as caught:
+        connector.test_connection()
+
+    assert "ORA-01017" in str(caught.value)
+    assert str(caught.value).count("[REDACTED]") == 2
+    assert "private-secret" not in str(caught.value)
 
 
 class FakeCursor:

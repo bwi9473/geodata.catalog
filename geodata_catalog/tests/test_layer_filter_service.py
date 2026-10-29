@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from geodata_catalog.services.layer_filter_service import (
     AttributeSearchFilter,
     FlightLevelFilter,
@@ -13,7 +17,7 @@ from geodata_catalog.services.layer_filter_service import (
 def test_build_attribute_expression_single():
     filters = [AttributeSearchFilter(column="STATUS", value="ACTIVE")]
     expr = LayerFilterService.build_attribute_expression(filters)
-    assert expr == '"STATUS" = \'ACTIVE\''
+    assert expr == 'LOWER("STATUS") = LOWER(\'ACTIVE\')'
 
 
 def test_build_attribute_expression_multiple():
@@ -22,13 +26,13 @@ def test_build_attribute_expression_multiple():
         AttributeSearchFilter(column="TYPE", value="RTE"),
     ]
     expr = LayerFilterService.build_attribute_expression(filters)
-    assert expr == '"STATUS" = \'ACTIVE\' AND "TYPE" = \'RTE\''
+    assert expr == 'LOWER("STATUS") = LOWER(\'ACTIVE\') AND LOWER("TYPE") = LOWER(\'RTE\')'
 
 
 def test_build_attribute_expression_multi_value_text_uses_in():
     filters = [AttributeSearchFilter(column="STATUS", value="ACTIVE, PENDING")]
     expr = LayerFilterService.build_attribute_expression(filters)
-    assert expr == '"STATUS" IN (\'ACTIVE\', \'PENDING\')'
+    assert expr == 'LOWER("STATUS") IN (LOWER(\'ACTIVE\'), LOWER(\'PENDING\'))'
 
 
 def test_build_attribute_expression_multi_value_numeric_uses_in_without_quotes():
@@ -49,7 +53,7 @@ def test_build_attribute_expression_skips_empty_values():
         AttributeSearchFilter(column="TYPE", value=""),
     ]
     expr = LayerFilterService.build_attribute_expression(filters)
-    assert expr == '"STATUS" = \'ACTIVE\''
+    assert expr == 'LOWER("STATUS") = LOWER(\'ACTIVE\')'
 
 
 def test_build_attribute_expression_all_empty_returns_none():
@@ -60,6 +64,46 @@ def test_build_attribute_expression_all_empty_returns_none():
 
 def test_build_attribute_expression_empty_list_returns_none():
     assert LayerFilterService.build_attribute_expression([]) is None
+
+
+@pytest.mark.parametrize("value", ["eham", "EHAM", "EhAm", "eham, ehrd"])
+def test_text_filter_matches_mixed_case_data(value):
+    expression = LayerFilterService.build_attribute_expression([
+        AttributeSearchFilter("AERODROMEID", value),
+    ])
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute("CREATE TABLE aerodromes (AERODROMEID TEXT)")
+        connection.executemany(
+            "INSERT INTO aerodromes VALUES (?)",
+            [("EHAM",), ("eham",), ("EhAm",), ("EHRD",), ("EBBR",)],
+        )
+        matches = connection.execute(
+            f"SELECT AERODROMEID FROM aerodromes WHERE {expression}"
+        ).fetchall()
+    expected = [("EHAM",), ("eham",), ("EhAm",)]
+    if "," in value:
+        expected.append(("EHRD",))
+    assert matches == expected
+
+
+@pytest.mark.parametrize("value", ["eHam", "O'Hare", "A (B)", "O'Hare, A (B)"])
+def test_case_insensitive_filters_roundtrip_and_can_be_replaced(value):
+    expression = LayerFilterService.build_attribute_expression([
+        AttributeSearchFilter("NAME", value),
+    ])
+    columns = [{"name": "NAME", "type": "varchar"}]
+    parsed = LayerFilterService.parse_attribute_filters_from_subset(expression, columns)
+    assert parsed[0].value == value
+    for subset in (
+        f'(base_filter = 1) AND ({expression})',
+        f'({expression}) AND (base_filter = 1)',
+        f'base_filter = 1 AND {expression}',
+        f'{expression} AND base_filter = 1',
+    ):
+        assert LayerFilterService.strip_attribute_filters_from_subset(
+            subset, ["NAME"]
+        ) == "base_filter = 1"
+    assert LayerFilterService.strip_attribute_filters_from_subset(expression, ["NAME"]) == ""
 
 
 # ------------------------------------------------------------------ #
@@ -118,6 +162,13 @@ def test_parse_attribute_filter_in_numeric_values_roundtrip():
     cols = [{"name": "FL", "label": "Flight Level", "type": "numeric"}]
     result = LayerFilterService.parse_attribute_filters_from_subset(subset, cols)
     assert result[0].value == "100, 200, 300"
+
+
+def test_parse_numeric_equality_without_column_type_preserves_legacy_behavior():
+    result = LayerFilterService.parse_attribute_filters_from_subset(
+        '"FL" = 100', [{"name": "FL"}]
+    )
+    assert result[0].value == "100"
 
 
 # ------------------------------------------------------------------ #

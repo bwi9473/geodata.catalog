@@ -111,6 +111,12 @@ def test_resolve_single_parent_value_rejects_multiple_or_unknown_values():
     assert window._resolve_single_parent_value("sector_combination", "DEC999") == ""
 
 
+def test_resolve_single_parent_value_preserves_canonical_case():
+    window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
+    window._distinct_values = {"sector_combination": ["DEC365", "DEC366"]}
+    assert window._resolve_single_parent_value("sector_combination", "dec365") == "DEC365"
+
+
 def test_last_filter_token_reads_only_last_segment():
     assert LayerCustomViewWindow._last_filter_token("DEC365, DEL") == "DEL"
     assert LayerCustomViewWindow._last_filter_token("DEC365, ") == ""
@@ -217,10 +223,6 @@ def _field_browser_window():
     window._attribute_grid = _FieldGrid()
     window._checkbox_grid = _FieldGrid()
     window._attribute_layout_key = None
-    window._field_search_edit = _FieldBrowserWidget()
-    window._filled_fields_check = _FieldBrowserWidget()
-    window._field_count_label = _FieldBrowserWidget()
-    window._no_fields_label = _FieldBrowserWidget()
     viewport = type("_Viewport", (), {"width": lambda self: self.available_width})()
     viewport.available_width = 1200
     window._attr_scroll_area = type("_Scroll", (), {"viewport": lambda self: viewport})()
@@ -246,40 +248,17 @@ def test_layout_enums_support_scoped_qt6_and_unscoped_qt5():
     assert _qt_enum_value(legacy, "Orientation", "Vertical") == 2
 
 
-def test_field_search_matches_names_and_labels_without_changing_filters():
+def test_all_fields_remain_available_without_changing_filters():
     window = _field_browser_window()
     original_filter = window._current_filter()
-    window._field_search_edit.setText("  traffic CLASS ")
     window._refresh_attribute_fields()
-    assert all(not cell.visible for _name, cell in window._attribute_fields)
-    assert window._no_fields_label.visible is True
-
-    for query in (" traffic_class ", " TRAFFIC CATEGORY "):
-        window._field_search_edit.setText(query)
-        window._refresh_attribute_fields()
-        assert [name for name, cell in window._attribute_fields if cell.visible] == ["TRAFFIC_CLASS"]
-        assert window._no_fields_label.visible is False
-        assert "1 of 4 fields | 3 filled" in window._field_count_label.text()
-        assert "2 filled fields hidden" in window._field_count_label.text()
-        assert window._current_filter() == original_filter
-
-
-def test_filled_fields_include_unchecked_checkbox_and_multi_value_dropdown():
-    window = _field_browser_window()
-    window._filled_fields_check.setChecked(True)
-    window._refresh_attribute_fields()
-    assert [name for name, cell in window._attribute_fields if cell.visible] == [
-        "AERODROMEID", "TRAFFIC_CLASS",
-    ]
+    assert all(cell.visible for _name, cell in window._attribute_fields)
     assert window._checkbox_fields[0][1].visible is True
-    assert window._attribute_filter_value("ACTIVE") == "N"
-    assert window._attribute_filter_value("TRAFFIC_CLASS") == "CIVIL, MILITARY"
-    assert window._field_count_label.text() == "3 of 4 fields | 3 filled"
-
+    assert window._current_filter() == original_filter
     window._attr_edits["AERODROMEID"].clear()
     window._refresh_attribute_fields()
-    assert window._attribute_fields[0][1].visible is False
-    assert window._field_count_label.text() == "2 of 4 fields | 2 filled"
+    assert all(cell.visible for _name, cell in window._attribute_fields)
+    assert original_filter.attributes
 
 
 def test_field_layout_reflows_existing_widgets_without_gaps_or_stale_columns():
@@ -296,16 +275,10 @@ def test_field_layout_reflows_existing_widgets_without_gaps_or_stale_columns():
     ]
     assert window._attribute_grid.stretches == {0: 1, 1: 1, 2: 0, 3: 0}
     assert [cell for cell, _row, _col in window._attribute_grid.items] == original_cells
-    window._field_search_edit.setText("traffic")
-    window._refresh_attribute_fields()
-    assert window._attribute_grid.items == [(original_cells[2], 0, 0)]
-    assert window._attribute_grid.stretches == {0: 1, 1: 0, 2: 0, 3: 0}
 
 
-def test_reset_filters_restores_all_fields_and_clears_hidden_values():
+def test_reset_filters_clears_all_values():
     window = _field_browser_window()
-    window._field_search_edit.setText("traffic")
-    window._filled_fields_check.setChecked(True)
     window._enabled_check = window._lower_spin = window._upper_spin = None
     window._attr_checks = {}
     window._checkbox_fields = []
@@ -314,11 +287,8 @@ def test_reset_filters_restores_all_fields_and_clears_hidden_values():
     applied = []
     window._on_search_clicked = lambda: applied.append(window._current_filter())
     window._on_reset_filters()
-    assert window._field_search_edit.text() == ""
-    assert window._filled_fields_check.isChecked() is False
     assert all(cell.visible for _name, cell in window._attribute_fields)
     assert applied[0].attributes == []
-    assert window._field_count_label.text() == "3 of 3 fields | 0 filled"
 
 
 def test_viewport_resize_reflows_fields_with_qt6_scoped_event(monkeypatch):

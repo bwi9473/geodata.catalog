@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 ```
 pytest>=8.0.0
 requests>=2.32.0
-python-oracledb>=2.2.0
+oracledb>=2.2.0
 ```
 
 ### Run all tests
@@ -58,6 +58,10 @@ Each test module mocks the QGIS runtime so tests can run with plain Python. The 
 ## UI Theme Colors
 
 System-wide UI colors are stored in `GeoDataCatalog/system_configuration.json` under `ui_colors` and loaded through `SystemConfigurationRepository.load_ui_colors()`.
+
+The catalog navigation uses `navigation_background` and `navigation_text`.
+Selection, panel, window, border, header, category, dataset, preset, hover, and
+primary colors use the other correspondingly named keys in `ui_colors`.
 
 New panels, docks, dialogs, or other layout widgets that need configurable colors should expose an `apply_theme(ui_colors: dict[str, str])` method. Create them through `GeoDataCatalogPlugin` and call `_apply_configured_theme(widget)` after construction so they use the same configured palette as the existing Data Panel and custom view window.
 

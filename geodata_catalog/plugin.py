@@ -357,7 +357,7 @@ class GeoDataCatalogPlugin:
             self._dock_widget.export_requested.connect(self._export_layer_configuration)
             self._configure_as_floating_window(self._dock_widget)
         self._apply_configured_theme(self._dock_widget)
-        self._size_configuration_window(self._dock_widget)
+        self._size_data_panel_window(self._dock_widget)
         self._dock_widget.show()
         self._dock_widget.raise_()
         self._dock_widget.activateWindow()
@@ -589,21 +589,7 @@ class GeoDataCatalogPlugin:
         widget.resize(width, height)
 
     def _size_configuration_window(self, widget) -> None:
-        if not hasattr(widget, "resize"):
-            return
-        available_geometry = self._available_screen_geometry(widget)
-        target_geometry = self._data_panel_target_geometry()
-        target_width = target_geometry.width() if target_geometry is not None else available_geometry.width()
-        target_height = target_geometry.height() if target_geometry is not None else available_geometry.height()
-
-        width = max(600, min(820, int(target_width * 0.48)))
-        height = max(760, min(980, int(target_height * 0.9)))
-        width = min(width, max(480, available_geometry.width() - 48))
-        height = min(height, max(620, available_geometry.height() - 48))
-
-        if hasattr(widget, "setMinimumSize"):
-            widget.setMinimumSize(560, 700)
-        widget.resize(width, height)
+        self._size_data_panel_window(widget)
 
     def _center_on_map_canvas(self, widget) -> None:
         if not hasattr(widget, "move"):
