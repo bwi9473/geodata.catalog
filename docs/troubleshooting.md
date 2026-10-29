@@ -84,9 +84,34 @@ Open the log and look for an `ERROR` line after clicking **Load Layer**. The err
 | `Failed to create layer ... QGIS runtime is not available` | Running outside QGIS | This should not happen in normal use; ensure the plugin is run from within QGIS |
 | `QGIS project instance is not available` | Plugin initialisation problem | Restart QGIS and re-activate the plugin |
 | `Failed to connect to Oracle datasource` | Network or credentials issue | Test with SQL*Plus or another Oracle client |
-| `python-oracledb is not installed` | oracledb package missing | Run `pip install python-oracledb>=2.2.0` in the QGIS Python environment |
+| `python-oracledb is not installed` | oracledb package missing | Run `pip install "oracledb>=2.2.0"` in the QGIS Python environment |
 | `requests package is not installed` | requests package missing | Run `pip install requests>=2.32.0` in the QGIS Python environment |
 | `Excel export failed. Install 'openpyxl'...` | `openpyxl` package missing for `.xlsx` export | Run `pip install openpyxl` in the QGIS Python environment, or export as CSV |
+
+---
+
+## Oracle Database Login Fails
+
+The **Database login** error dialog and the **GeoData Catalog** tab in QGIS
+**View > Panels > Log Messages** show the original driver error after
+`Failed to connect to Oracle datasource.`. This includes Oracle/driver codes
+such as `ORA-01017` or `DPY-6005` and any underlying exception, for example
+a network timeout. Failures during the login validation query are reported
+in the same way.
+
+The connection password is replaced with `[REDACTED]` if it appears in the
+error text. The plugin does not add credentials or a connection URI to the
+message.
+
+- Authentication errors: check the username/password and database account status.
+- Network errors: check the host, port, VPN, and firewall.
+- Service errors: verify the **service name** with the database administrator;
+  the connector uses a service name, not a SID.
+- `python-oracledb is not installed`: install the driver in the QGIS Python
+  environment, not in an unrelated system Python installation.
+
+After updating the plugin, reload it or restart QGIS and retry **Connect** to
+obtain the detailed error. Older log entries are not updated.
 
 ---
 

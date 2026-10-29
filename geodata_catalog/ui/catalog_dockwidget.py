@@ -5,6 +5,11 @@ from pathlib import Path
 from geodata_catalog.models.datasource import Datasource, DatasourceType
 from geodata_catalog.models.layer_definition import LayerDefinition
 from geodata_catalog.services.style_service import generate_style_preview_icon
+from geodata_catalog.ui.catalog_layout import (
+    CatalogNavigation,
+    CollapsibleSection,
+    catalog_styles,
+)
 
 from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
@@ -12,13 +17,16 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDockWidget,
     QFrame,
-    QGroupBox,
+    QFormLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPushButton,
+    QSplitter,
     QStyle,
     QTreeWidget,
     QTreeWidgetItem,
@@ -29,8 +37,15 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtGui import QIcon, QColor, QPalette
 
 
-USER_ROLE = getattr(Qt, "UserRole", Qt.ItemDataRole.UserRole)
-_CUSTOM_CTX = getattr(Qt, "CustomContextMenu", None) or Qt.ContextMenuPolicy.CustomContextMenu
+_ITEM_DATA_ROLE = getattr(Qt, "ItemDataRole", None)
+USER_ROLE = getattr(Qt, "UserRole", None)
+if USER_ROLE is None and _ITEM_DATA_ROLE is not None:
+    USER_ROLE = _ITEM_DATA_ROLE.UserRole
+
+_CONTEXT_MENU_POLICY = getattr(Qt, "ContextMenuPolicy", None)
+_CUSTOM_CTX = getattr(Qt, "CustomContextMenu", None)
+if _CUSTOM_CTX is None and _CONTEXT_MENU_POLICY is not None:
+    _CUSTOM_CTX = _CONTEXT_MENU_POLICY.CustomContextMenu
 
 
 def _resolve_no_item_flags():
@@ -88,74 +103,48 @@ class CatalogDockWidget(QDockWidget):
         self._grouping_mode = "datasource"
         self._rendering_tree = False
         self._all_layers_mode = False
+        self._selected_group = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
         body = QWidget(self)
         root = QVBoxLayout(body)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
 
-        hint = QLabel("Manage data sources and configure their layers.")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        workspace = QSplitter(self._orientation("Horizontal"))
+        self.navigation = CatalogNavigation("Manage catalog")
+        self.navigation.selection_changed.connect(self._on_navigation_changed)
+        workspace.addWidget(self.navigation)
 
-        action_row = QHBoxLayout()
-        action_row.setContentsMargins(4, 0, 4, 0)
-        action_row.setSpacing(3)
-        self.add_btn = self._toolbar_button(
-            ":/images/themes/default/mActionAddLayer.svg", "Add Source"
-        )
-        self.edit_btn = self._toolbar_button(
-            ":/images/themes/default/mActionOptions.svg", "Edit Source"
-        )
-        self.delete_btn = self._toolbar_button(
-            ":/images/themes/default/mActionDeleteSelected.svg", "Delete Source"
-        )
-        self.refresh_btn = self._toolbar_button(
-            ":/images/themes/default/mActionRefresh.svg", "Refresh Source"
-        )
-        self.export_btn = self._toolbar_button(
-            ":/images/themes/default/mActionFileSave.svg",
-            "Export Layer Configuration",
-        )
-        self.add_btn.clicked.connect(self.add_source_requested.emit)
-        self.edit_btn.clicked.connect(self._emit_edit)
-        self.delete_btn.clicked.connect(self._emit_delete)
-        self.refresh_btn.clicked.connect(self._emit_refresh)
-        self.export_btn.clicked.connect(self.export_requested.emit)
-        for button in (
-            self.add_btn,
-            self.edit_btn,
-            self.delete_btn,
-            self.refresh_btn,
-            self.export_btn,
-        ):
-            action_row.addWidget(button)
-        action_row.addStretch(1)
-        root.addLayout(action_row)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(10, 0, 0, 0)
+        content_layout.setSpacing(8)
 
-        grouping_toolbox = QFrame()
-        grouping_toolbox.setProperty("groupingToolbox", True)
-        grouping_row = QHBoxLayout(grouping_toolbox)
-        grouping_row.setContentsMargins(6, 3, 6, 3)
-        grouping_row.setSpacing(6)
-        grouping_row.addWidget(QLabel("Group by"))
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Search layers, sources, or categories...")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        toolbar.addWidget(self.filter_edit, stretch=1)
+
         self.grouping_combo = QComboBox()
         self.grouping_combo.addItems(["Datasource", "Category"])
         self.grouping_combo.setToolTip("Choose how sources and layers are grouped")
         self.grouping_combo.currentTextChanged.connect(self._on_grouping_changed)
-        grouping_row.addWidget(self.grouping_combo)
-        grouping_row.addStretch(1)
-        root.addWidget(grouping_toolbox)
+        toolbar.addWidget(self.grouping_combo)
+        self.add_btn = QPushButton("Add source")
+        self.add_btn.setIcon(QIcon(":/images/themes/default/mActionAddLayer.svg"))
+        toolbar.addWidget(self.add_btn)
+        content_layout.addLayout(toolbar)
 
-        explore_group = QGroupBox("Configuration")
-        explore_layout = QVBoxLayout(explore_group)
-        explore_layout.setSpacing(8)
+        content_splitter = QSplitter(self._orientation("Vertical"))
 
         self.datasource_tree = QTreeWidget()
         self.datasource_tree.setColumnCount(2)
-        self.datasource_tree.setHeaderHidden(True)
+        self.datasource_tree.setHeaderLabels(["Layer or source", "Action"])
         tree_header = self.datasource_tree.header()
         resize_mode = getattr(QHeaderView, "ResizeMode", QHeaderView)
         tree_header.setStretchLastSection(False)
@@ -164,13 +153,60 @@ class CatalogDockWidget(QDockWidget):
         self.datasource_tree.setColumnWidth(1, 96)
         self.datasource_tree.itemSelectionChanged.connect(self._on_datasource_changed)
         self.datasource_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
-        explore_layout.addWidget(self.datasource_tree, stretch=2)
+        content_splitter.addWidget(self.datasource_tree)
+
+        details = QFrame()
+        details.setProperty("detailsPanel", True)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(10, 8, 10, 10)
+        self.detail_title = QLabel("Select a source or layer")
+        self.detail_title.setProperty("detailTitle", True)
+        details_layout.addWidget(self.detail_title)
+        self.detail_form = QFormLayout()
+        details_layout.addLayout(self.detail_form)
+        details_layout.addStretch(1)
+        self.details_section = CollapsibleSection("Configuration details", details)
+        content_splitter.addWidget(self.details_section)
+        content_splitter.setStretchFactor(0, 3)
+        content_splitter.setStretchFactor(1, 1)
+        content_splitter.setSizes([430, 170])
+        content_layout.addWidget(content_splitter, stretch=1)
+
+        self.edit_btn = QPushButton("Edit source")
+        self.edit_btn.setIcon(QIcon(":/images/themes/default/mActionOptions.svg"))
+        self.delete_btn = QToolButton()
+        self.delete_btn.setIcon(QIcon(":/images/themes/default/mActionDeleteSelected.svg"))
+        self.delete_btn.setToolTip("Delete source")
+        self.refresh_btn = QToolButton()
+        self.refresh_btn.setIcon(QIcon(":/images/themes/default/mActionRefresh.svg"))
+        self.refresh_btn.setToolTip("Refresh source")
+        self.export_btn = QPushButton("Export")
+        self.export_btn.setIcon(QIcon(":/images/themes/default/mActionFileSave.svg"))
+        self.add_btn.clicked.connect(self.add_source_requested.emit)
+        self.edit_btn.clicked.connect(self._emit_edit)
+        self.delete_btn.clicked.connect(self._emit_delete)
+        self.refresh_btn.clicked.connect(self._emit_refresh)
+        self.export_btn.clicked.connect(self.export_requested.emit)
 
         self.layers_list = QListWidget()
 
-        root.addWidget(explore_group)
+        footer = QHBoxLayout()
+        footer.setSpacing(6)
+        footer.addWidget(self.edit_btn)
+        footer.addWidget(self.delete_btn)
+        footer.addWidget(self.refresh_btn)
+        footer.addStretch(1)
+        footer.addWidget(self.export_btn)
+        content_layout.addLayout(footer)
+
+        workspace.addWidget(content)
+        workspace.setStretchFactor(0, 0)
+        workspace.setStretchFactor(1, 1)
+        workspace.setSizes([180, 700])
+        root.addWidget(workspace, stretch=1)
 
         self.setWidget(body)
+        self.setMinimumWidth(720)
 
     def _toolbar_button(self, icon_path: str, tooltip: str) -> QToolButton:
         button = QToolButton()
@@ -199,13 +235,13 @@ class CatalogDockWidget(QDockWidget):
         selection_background = str(ui_colors.get("selection_background", "#CFE8D1"))
         selection_text = str(ui_colors.get("selection_text", "#172A1B"))
         self.setStyleSheet(
-            "\n".join(
+            catalog_styles(ui_colors)
+            + "\n"
+            + "\n".join(
                 [
-                    f"QDockWidget {{ background: {window_background}; color: {text}; }}",
-                    f"QWidget {{ background: {window_background}; color: {text}; }}",
-                    f"QGroupBox {{ background: {panel_background}; color: {header_text}; border: 1px solid {border}; border-radius: 4px; margin-top: 12px; padding: 8px; font-weight: 700; }}",
-                    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }",
-                    f"QTreeWidget, QListWidget {{ background: {panel_background}; color: {dataset_text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
+                    f"QFrame[detailsPanel='true'] {{ background: {panel_background}; color: {text}; }}",
+                    f"QLabel[detailTitle='true'] {{ color: {header_text}; font-weight: 700; }}",
+                    f"QTreeWidget, QListWidget {{ background: {window_background}; color: {dataset_text}; border: 1px solid {border}; border-radius: 4px; outline: 0; }}",
                     f"QTreeWidget::item {{ color: {dataset_text}; }}",
                     f"QTreeWidget::item:has-children {{ color: {category_text}; }}",
                     f"QTreeWidget::item, QListWidget::item {{ min-height: 30px; padding: 2px 6px; border-bottom: 1px solid {header_background}; }}",
@@ -263,14 +299,56 @@ class CatalogDockWidget(QDockWidget):
         try:
             self.datasource_tree.clear()
             self._datasource_items.clear()
-            if self._grouping_mode == "category":
-                self._render_category_tree()
-            else:
-                self._render_datasource_tree()
+            groups = self._navigation_groups()
+            self._rebuild_navigation(groups)
+            selected_layers = next(
+                (
+                    layers
+                    for key, _label, layers, _icon in groups
+                    if key == self._selected_group
+                ),
+                None,
+            )
+            layers = (
+                selected_layers
+                if selected_layers is not None
+                else [
+                    layer
+                    for _key, _label, group_layers, _icon in groups
+                    for layer in group_layers
+                ]
+            )
+            for layer in sorted(layers, key=lambda value: value.display_name.casefold()):
+                self._add_layer_item(
+                    self.datasource_tree,
+                    layer,
+                    _display_category_label(layer.business_group),
+                )
         finally:
             self._rendering_tree = False
+        self._apply_filter(self.filter_edit.text())
+        self._show_selection_details()
 
-    def _render_datasource_tree(self) -> None:
+    def _navigation_groups(
+        self,
+    ) -> list[tuple[str, str, list[LayerDefinition], QIcon]]:
+        if self._grouping_mode == "category":
+            grouped_layers: dict[str, list[LayerDefinition]] = {}
+            for layers in self._layers_by_datasource.values():
+                for layer in layers:
+                    category = _display_category_label(layer.business_group)
+                    grouped_layers.setdefault(category, []).append(layer)
+            return [
+                (
+                    category,
+                    category,
+                    grouped_layers[category],
+                    QIcon(":/images/themes/default/mIconLayerGroup.svg"),
+                )
+                for category in sorted(grouped_layers, key=str.casefold)
+            ]
+
+        groups: list[tuple[str, str, list[LayerDefinition], QIcon]] = []
         file_layers: dict[DatasourceType, list[LayerDefinition]] = {
             DatasourceType.KML: [],
             DatasourceType.GEOJSON: [],
@@ -280,62 +358,99 @@ class CatalogDockWidget(QDockWidget):
             if datasource.datasource_type in file_layers:
                 file_layers[datasource.datasource_type].extend(layers)
                 continue
-            self._add_datasource_item(datasource, layers)
-
-        for datasource_type, layers in file_layers.items():
-            if not any(
-                datasource.datasource_type is datasource_type for datasource in self._datasources
-            ):
-                continue
-            type_label = datasource_type.value.upper()
-            type_item = QTreeWidgetItem([f"{type_label} (COUNT = {len(layers)})"])
-            type_item.setIcon(0, self._datasource_icon(datasource_type))
-            self.datasource_tree.addTopLevelItem(type_item)
-            self._add_layer_items(type_item, layers)
-            type_item.setExpanded(False)
-
-    def _render_category_tree(self) -> None:
-        grouped_layers: dict[str, list[tuple[LayerDefinition, DatasourceType]]] = {}
-        for datasource in self._datasources:
-            datasource_type = datasource.datasource_type
-            for layer in self._layers_by_datasource.get(datasource.id, []):
-                category = _display_category_label(layer.business_group or "")
-                grouped_layers.setdefault(category, []).append((layer, datasource_type))
-
-        for category in sorted(grouped_layers, key=str.casefold):
-            category_layers = grouped_layers[category]
-            category_item = QTreeWidgetItem(
-                [f"{category} (COUNT = {len(category_layers)})"]
-            )
-            self.datasource_tree.addTopLevelItem(category_item)
-            for layer, datasource_type in sorted(
-                category_layers, key=lambda value: value[0].display_name.casefold()
-            ):
-                self._add_layer_item(
-                    category_item,
-                    layer,
-                    category,
-                    self._datasource_icon(datasource_type),
+            groups.append(
+                (
+                    datasource.id,
+                    datasource.name,
+                    layers,
+                    self._datasource_icon(datasource.datasource_type),
                 )
-            category_item.setExpanded(False)
+            )
+        for datasource_type, layers in file_layers.items():
+            if any(
+                datasource.datasource_type is datasource_type
+                for datasource in self._datasources
+            ):
+                groups.append(
+                    (
+                        datasource_type.value,
+                        datasource_type.value.upper(),
+                        layers,
+                        self._datasource_icon(datasource_type),
+                    )
+                )
+        return groups
 
-    def _add_datasource_item(
+    def _rebuild_navigation(
         self,
-        datasource: Datasource,
-        layers: list[LayerDefinition],
-        parent_item: QTreeWidgetItem | None = None,
-    ) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([f"{datasource.name} (COUNT = {len(layers)})"])
-        item.setData(0, USER_ROLE, datasource.id)
-        item.setIcon(0, self._datasource_icon(datasource.datasource_type))
-        self._datasource_items[datasource.id] = item
-        if parent_item is None:
-            self.datasource_tree.addTopLevelItem(item)
-        else:
-            parent_item.addChild(item)
-        self._add_layer_items(item, layers)
-        item.setExpanded(False)
-        return item
+        groups: list[tuple[str, str, list[LayerDefinition], QIcon]] | None = None,
+    ) -> None:
+        groups = self._navigation_groups() if groups is None else groups
+        entries = [
+            (
+                "",
+                "All layers",
+                sum(len(layers) for _key, _label, layers, _icon in groups),
+                QIcon(":/images/themes/default/mIconLayerGroup.svg"),
+            )
+        ]
+        available_keys = {key for key, _label, _layers, _icon in groups}
+        entries.extend(
+            (key, label, len(layers), icon)
+            for key, label, layers, icon in groups
+        )
+        if self._selected_group not in available_keys:
+            self._selected_group = ""
+        self.navigation.set_entries(entries, self._selected_group)
+
+    @staticmethod
+    def _group_label(item: QTreeWidgetItem) -> str:
+        return item.text(0).split(" (COUNT = ", 1)[0]
+
+    def _group_key(self, item: QTreeWidgetItem) -> str:
+        payload = item.data(0, USER_ROLE)
+        if isinstance(payload, str):
+            return payload
+        return self._group_label(item)
+
+    def _leaf_count(self, item: QTreeWidgetItem) -> int:
+        if not item.childCount():
+            return int(isinstance(item.data(0, USER_ROLE), tuple))
+        return sum(self._leaf_count(item.child(index)) for index in range(item.childCount()))
+
+    def _on_navigation_changed(self, group_key: str) -> None:
+        self._selected_group = group_key
+        self._render_tree()
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.strip().casefold()
+        for index in range(self.datasource_tree.topLevelItemCount()):
+            item = self.datasource_tree.topLevelItem(index)
+            visible = self._filter_item(item, needle)
+            item.setHidden(not visible)
+            if needle and visible:
+                item.setExpanded(True)
+
+    def _filter_item(self, item: QTreeWidgetItem, needle: str) -> bool:
+        own_match = (
+            not needle
+            or needle in item.text(0).casefold()
+            or needle in item.toolTip(0).casefold()
+        )
+        child_match = False
+        for index in range(item.childCount()):
+            child = item.child(index)
+            child_visible = self._filter_item(child, needle)
+            child.setHidden(not child_visible)
+            child_match = child_match or child_visible
+        return own_match or child_match
+
+    @staticmethod
+    def _orientation(name: str):
+        orientation = getattr(Qt, "Orientation", None)
+        if orientation is not None:
+            return getattr(orientation, name)
+        return getattr(Qt, name)
 
     @staticmethod
     def _datasource_icon(datasource_type: DatasourceType) -> QIcon:
@@ -351,44 +466,11 @@ class CatalogDockWidget(QDockWidget):
         self._all_layers_mode = False
         self.layers_list.clear()
         self._layers_by_datasource[datasource_id] = list(layers)
-        if self._grouping_mode == "category":
-            self._render_tree()
-            return
-        datasource_item = self._datasource_items.get(datasource_id)
-        if datasource_item is None:
-            return
-        datasource_item.setText(0, self._datasource_label(datasource_item, len(layers)))
-        self._remove_layer_items(datasource_item)
-        self._add_layer_items(datasource_item, layers)
-
-    def _datasource_label(self, item: QTreeWidgetItem, count: int) -> str:
-        label = item.text(0)
-        if " (COUNT = " in label:
-            label = label.split(" (COUNT = ", 1)[0]
-        return f"{label} (COUNT = {count})"
-
-    def _remove_layer_items(self, datasource_item: QTreeWidgetItem) -> None:
-        while datasource_item.childCount():
-            datasource_item.takeChild(0)
-
-    def _add_layer_items(
-        self, datasource_item: QTreeWidgetItem, layers: list[LayerDefinition]
-    ) -> None:
-        grouped_layers: dict[str, list[LayerDefinition]] = {}
-        for layer in layers:
-            category = _display_category_label(layer.business_group or "")
-            grouped_layers.setdefault(category, []).append(layer)
-
-        for category in sorted(grouped_layers, key=str.casefold):
-            category_layers = grouped_layers[category]
-            category_item = QTreeWidgetItem([f"{category} (COUNT = {len(category_layers)})"])
-            datasource_item.addChild(category_item)
-            for layer in sorted(category_layers, key=lambda value: value.display_name.casefold()):
-                self._add_layer_item(category_item, layer, category)
+        self._render_tree()
 
     def _add_layer_item(
         self,
-        parent_item: QTreeWidgetItem,
+        parent_item: QTreeWidgetItem | QTreeWidget,
         layer: LayerDefinition,
         category: str,
         icon: QIcon | None = None,
@@ -406,7 +488,10 @@ class CatalogDockWidget(QDockWidget):
             f"Count: {layer.feature_count if layer.feature_count is not None else 'Unknown'}"
             + (f"\nStyle: {_style_display_name(layer.default_style_file)}" if layer.default_style_file else "")
         )
-        parent_item.addChild(item)
+        if isinstance(parent_item, QTreeWidget):
+            parent_item.addTopLevelItem(item)
+        else:
+            parent_item.addChild(item)
         edit_button = QToolButton(self.datasource_tree)
         edit_button.setAutoRaise(True)
         edit_button.setFixedSize(90, 28)
@@ -526,7 +611,14 @@ class CatalogDockWidget(QDockWidget):
     def selected_datasource_id(self) -> str | None:
         item = self.datasource_tree.currentItem()
         if item is None:
-            return None
+            return (
+                self._selected_group
+                if any(
+                    datasource.id == self._selected_group
+                    for datasource in self._datasources
+                )
+                else None
+            )
         payload = item.data(0, USER_ROLE)
         if isinstance(payload, str):
             return payload
@@ -541,12 +633,60 @@ class CatalogDockWidget(QDockWidget):
         return None
 
     def _on_datasource_changed(self) -> None:
+        self._show_selection_details()
         if self._all_layers_mode or self._rendering_tree:
             return
         item = self.datasource_tree.currentItem()
         datasource_id = item.data(0, USER_ROLE) if item is not None else None
         if isinstance(datasource_id, str):
             self.refresh_requested.emit(datasource_id)
+
+    def _show_selection_details(self) -> None:
+        while self.detail_form.rowCount():
+            self.detail_form.removeRow(0)
+        item = self.datasource_tree.currentItem()
+        payload = item.data(0, USER_ROLE) if item is not None else None
+        datasource_id = self.selected_datasource_id()
+        datasource = next(
+            (value for value in self._datasources if value.id == datasource_id),
+            None,
+        )
+        self.edit_btn.setEnabled(datasource is not None)
+        self.delete_btn.setEnabled(datasource is not None)
+        self.refresh_btn.setEnabled(datasource is not None)
+        if isinstance(payload, tuple) and len(payload) >= 2:
+            layer = next(
+                (
+                    value
+                    for value in self._layers_by_datasource.get(str(payload[0]), [])
+                    if value.layer_name == str(payload[1])
+                ),
+                None,
+            )
+            if layer is not None:
+                self.detail_title.setText(layer.display_name)
+                self._add_detail_row("Category", _display_category_label(layer.business_group))
+                self._add_detail_row("Technical name", layer.technical_name or layer.layer_name)
+                self._add_detail_row("Geometry", layer.geometry_type or "Unknown")
+                self._add_detail_row("CRS", layer.default_crs or "Not set")
+                return
+        if datasource is not None:
+            self.detail_title.setText(datasource.name)
+            self._add_detail_row("Type", datasource.datasource_type.value.upper())
+            self._add_detail_row(
+                "Status", "Enabled" if datasource.enabled else "Disabled"
+            )
+            self._add_detail_row(
+                "Layers",
+                str(len(self._layers_by_datasource.get(datasource.id, []))),
+            )
+            return
+        self.detail_title.setText("Select a source or layer")
+
+    def _add_detail_row(self, label: str, value: str) -> None:
+        value_label = QLabel(value)
+        value_label.setWordWrap(True)
+        self.detail_form.addRow(QLabel(label), value_label)
 
     def _emit_edit(self) -> None:
         datasource_id = self.selected_datasource_id()

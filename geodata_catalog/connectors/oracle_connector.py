@@ -139,10 +139,15 @@ class OracleConnector(BaseConnector):
                 ]
 
     def test_connection(self) -> bool:
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT 1 FROM dual")
-                _ = cursor.fetchone()
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM dual")
+                    _ = cursor.fetchone()
+        except DatasourceConnectionException:
+            raise
+        except Exception as exc:
+            raise self._connection_error(exc, self._config.get("password", "")) from exc
         return True
 
     @staticmethod
@@ -284,9 +289,9 @@ class OracleConnector(BaseConnector):
     def _connect(self):
         if oracledb is None:
             raise DatasourceConnectionException("python-oracledb is not installed.")
+        password = self._config.get("password", "")
         try:
             username = self._config.get("username", "")
-            password = self._config.get("password", "")
             if self._config.get("authcfg"):
                 from qgis.core import QgsApplication, QgsAuthMethodConfig
 
@@ -309,8 +314,24 @@ class OracleConnector(BaseConnector):
             )
         except DatasourceConnectionException:
             raise
-        except Exception as exc:  # pragma: no cover
-            raise DatasourceConnectionException("Failed to connect to Oracle datasource.") from exc
+        except Exception as exc:
+            raise self._connection_error(exc, password) from exc
+
+    @staticmethod
+    def _connection_error(exc: Exception, password: str) -> DatasourceConnectionException:
+        details = []
+        seen = set()
+        current: BaseException | None = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            details.append(f"{type(current).__name__}: {current}")
+            current = current.__cause__ or (
+                current.__context__ if not current.__suppress_context__ else None
+            )
+        message = "Failed to connect to Oracle datasource.\n" + "\n".join(details)
+        if password:
+            message = message.replace(password, "[REDACTED]")
+        return DatasourceConnectionException(message)
 
     @classmethod
     def _is_safe_identifier(cls, identifier: str) -> bool:

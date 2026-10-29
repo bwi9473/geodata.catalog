@@ -53,7 +53,7 @@ Open the **OSGeo4W Shell** (Windows) or a terminal where the QGIS Python is on t
 
 ```bash
 # For Oracle support
-pip install python-oracledb>=2.2.0
+pip install "oracledb>=2.2.0"
 
 # For REST source support
 pip install requests>=2.32.0
@@ -269,11 +269,13 @@ For layers configured without flight levels, **Flight Levels (not available)** i
 For layers with many filter fields:
 
 - The attribute fields automatically flow into one to four columns as you resize the window.
-- Use **Find filter field** to find a field by its technical name or display label. This only changes which input fields are visible; it does not search the result records.
-- Enable **Only filled fields** to review the filters you have entered, including checkbox values such as `N`.
-- The field counter also indicates filled fields hidden by the field search. Hidden fields keep their values and are still included when you click **Search**.
-- Drag the horizontal divider between filters and results to give either section more space. The field search and the **Search**, **Reset**, and **Save** buttons stay outside the scrolling field list.
-- **Reset** clears all filter values and restores the full field list.
+- Inputs stay compact, with a maximum field width of 360 pixels, even for layers with only one filter field.
+- All configured filter fields remain visible; there is no separate field-name search or filled-fields-only mode.
+- Text filters are case-insensitive: `eham` and `EHAM` match the same values. Comma-separated values and numeric filters remain supported.
+- Drag the horizontal divider between filters and results to give either section more space. The **Search**, **Reset**, and **Save** buttons stay outside the scrolling field list.
+- **Reset** clears all filter values.
+
+In the **Data Panel**, hover over a layer name to see its geometry type, geometry column, CRS, and source information. The separate layer-details block has been removed; saved views and presets remain available.
 
 The QGIS **Layers** panel context menu includes both **Layer Filter…** and **Open Custom View…** entries provided by GeoData Catalog.
 
@@ -285,7 +287,7 @@ The QGIS **Layers** panel context menu includes both **Layer Filter…** and **O
 |---|---|
 | `GeoDataCatalog/config.json` | Datasource connection parameters and business layer metadata |
 | `GeoDataCatalog/layer_config.json` | Per-layer layer-name override, label column, FL-filter toggle, searchable columns, and custom-view columns (created on first save) |
-| `GeoDataCatalog/system_configuration.json` | System-wide options like flight-level quick presets (created automatically with defaults) |
+| `GeoDataCatalog/system_configuration.json` | System-wide options like flight-level quick presets and the catalog `ui_colors` palette (created automatically with defaults) |
 
 Both files are stored in the active QGIS profile app-data location and are also mirrored to QGIS settings for compatibility. You do not need to edit these files manually.
 
@@ -350,8 +352,9 @@ GeoData Catalog panel
 
 | Action | How |
 |---|---|
-| Load a layer | Double-click it in the Layer List |
-| Select a datasource | Single-click in the Datasource Tree |
+| Load a layer | Double-click it in the layer list, or select it and click **Load** |
+| Browse one category | Select it in the navigation on the left |
+| Select a datasource | Single-click it in the configuration list |
 | Refresh layers | Click **Refresh** or single-click a datasource item |
 
 ### All loadable layers overview
@@ -359,8 +362,9 @@ GeoData Catalog panel
 To see all loadable file sources and database tables in one list:
 
 1. Open the **Data Panel**.
-2. The Data Panel opens as a larger separate window centered over the map canvas with an aggregated list across all datasources.
-3. Double-click any entry to load it directly.
+2. The Data Panel opens as a separate window centered over the map canvas with category navigation on the left and a flat layer list across all datasources. Categories are grouped only in the left navigation, not repeated as headings in the layer list.
+3. Search or choose a category, then select a layer to inspect its collapsible details and saved views.
+4. Double-click the layer or click **Load** to add it to the map.
 
 ---
 

@@ -28,6 +28,11 @@ def _install_qgis_stubs() -> None:
     qgis_pyqt_widgets = _make_stub("qgis.PyQt.QtWidgets")
     qgis_pyqt_gui = _make_stub("qgis.PyQt.QtGui")
     qgis_pyqt_xml = _make_stub("qgis.PyQt.QtXml")
+    for name in ("QSize", "QVariant"):
+        setattr(qgis_pyqt_core, name, type(name, (), {"__init__": lambda self, *args: None}))
+    for name in ("QIcon", "QColor", "QPalette"):
+        setattr(qgis_pyqt_gui, name, type(name, (), {}))
+    qgis_pyqt_xml.QDomDocument = type("QDomDocument", (), {})
 
     class _FakeQt:
         UserRole = 256
