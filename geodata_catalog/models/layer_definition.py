@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 
 @dataclass(slots=True)
@@ -75,3 +75,13 @@ class LayerDefinition:
             searchable_columns=value.get("searchable_columns"),
             metadata=value.get("metadata", {}),
         )
+
+
+class CatalogRow(TypedDict):
+    datasource_id: str
+    source_name: str
+    source_type: str
+    layer: LayerDefinition
+    loadable: bool
+    business_group: str
+    availability_reason: str

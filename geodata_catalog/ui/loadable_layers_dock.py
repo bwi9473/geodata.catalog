@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from geodata_catalog.models.layer_definition import LayerDefinition
+from geodata_catalog.models.layer_definition import CatalogRow, LayerDefinition
 from geodata_catalog.models.saved_layer_view import SavedLayerView
 
 from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
@@ -59,7 +59,7 @@ class LoadableLayersDockWidget(QDockWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__("Data Panel", parent)
-        self._rows: list[dict[str, str | LayerDefinition]] = []
+        self._rows: list[CatalogRow] = []
         self._updating_tree = False
         self._updating_basemap = False
         self._highlighted_item = None
@@ -312,7 +312,7 @@ class LoadableLayersDockWidget(QDockWidget):
 
     def set_rows(
         self,
-        rows: list[dict[str, str | LayerDefinition]],
+        rows: list[CatalogRow],
         loaded_layer_keys: set[str],
         _active_color: str,
         saved_views: list[SavedLayerView] | None = None,
@@ -322,7 +322,7 @@ class LoadableLayersDockWidget(QDockWidget):
         self._updating_tree = True
         self._highlighted_item = None
         self.layers_tree.clear()
-        grouped_rows: dict[str, list[dict[str, str | LayerDefinition]]] = {}
+        grouped_rows: dict[str, list[CatalogRow]] = {}
         for row in rows:
             datasource_id = str(row.get("datasource_id", ""))
             display_group = str(row.get("business_group", "")).strip()
@@ -372,6 +372,8 @@ class LoadableLayersDockWidget(QDockWidget):
                     category_item,
                     [f"{layer.display_name} ({saved_count} saved layer{'s' if saved_count != 1 else ''})"],
                 )
+                if not loadable:
+                    item.setText(0, f"{item.text(0)} - Not available")
                 item.setIcon(0, self._datasource_icon(source_type))
                 geometry_icon = self._layer_icon(layer)
                 if geometry_icon is not None:
@@ -389,12 +391,10 @@ class LoadableLayersDockWidget(QDockWidget):
                     f"Geometry: {layer.geometry_type or 'Unknown'}\n"
                     f"CRS: {layer.default_crs or 'Not set'}\n"
                     f"Loadable: {'Yes' if loadable else 'No'}\n"
-                    "Double-click to load this layer."
+                    + ("Double-click to load this layer." if loadable else "Select for availability details.")
                 )
                 if not loadable and availability_reason:
                     item.setToolTip(0, f"{item.toolTip(0)}\nReason: {availability_reason}")
-                if not loadable:
-                    item.setDisabled(True)
 
             category_item.setExpanded(False)
 
@@ -513,7 +513,9 @@ class LoadableLayersDockWidget(QDockWidget):
     def _on_preset_double_clicked(self, item: QListWidgetItem) -> None:
         view_id = item.data(USER_ROLE)
         if view_id:
-            self.saved_view_requested.emit(str(view_id))
+            self._select_saved_view(str(view_id))
+            if self._detail_loadable:
+                self.saved_view_requested.emit(str(view_id))
 
     def _on_preset_clicked(self, item: QListWidgetItem) -> None:
         view_id = str(item.data(USER_ROLE) or "")
@@ -536,7 +538,10 @@ class LoadableLayersDockWidget(QDockWidget):
             ),
             None,
         )
-        self._detail_loadable = self._detail_layer is not None
+        self._detail_loadable = any(
+            row.get("layer") is self._detail_layer and bool(row.get("loadable", True))
+            for row in self._rows
+        )
         self._select_tree_layer(view.datasource_id, view.layer_name)
         self._show_layer_details(self._detail_layer)
 
@@ -699,6 +704,13 @@ class LoadableLayersDockWidget(QDockWidget):
             ("Features", str(layer.feature_count) if layer.feature_count is not None else "Unknown"),
             ("Geometry column", layer.geometry_column or "Not set"),
         ]
+        if not self._detail_loadable:
+            reason = next((
+                str(row.get("availability_reason", "Source not available."))
+                for row in self._rows if row.get("layer") is layer
+            ), "Source not available.")
+            values.insert(0, ("Not available", reason))
+            self.load_button.setToolTip(reason)
         for label, value in values:
             value_label = QLabel(value)
             value_label.setProperty("detailValue", True)
@@ -707,6 +719,8 @@ class LoadableLayersDockWidget(QDockWidget):
         self._populate_presets()
 
     def _on_load_button_clicked(self) -> None:
+        if not self._detail_loadable:
+            return
         if self._selected_saved_view_id:
             self.saved_view_requested.emit(self._selected_saved_view_id)
         elif self._detail_layer is not None and self._detail_loadable:

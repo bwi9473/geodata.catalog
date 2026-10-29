@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.svg_markers import portable_svg_reference
 
 
@@ -183,19 +184,26 @@ class LayerConfigRepository:
         try:
             raw = self._file_path.read_text(encoding="utf-8")
             data = json.loads(raw)
-            if not isinstance(data, list):
-                return []
+            if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+                raise ConfigurationException("Layer configuration must be a JSON list of objects.")
             return [LayerConfig.from_dict(item) for item in data]
-        except Exception:
-            return []
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise ConfigurationException(
+                f"Failed to read layer configuration: {self._file_path}"
+            ) from exc
 
     def _persist(self, configs: list[LayerConfig]) -> None:
         if self._file_path is None:
             return
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            [config.to_dict() for config in configs],
-            indent=2,
-            ensure_ascii=False,
-        )
-        self._file_path.write_text(payload, encoding="utf-8")
+        try:
+            self._file_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(
+                [config.to_dict() for config in configs],
+                indent=2,
+                ensure_ascii=False,
+            )
+            self._file_path.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            raise ConfigurationException(
+                f"Failed to write layer configuration: {self._file_path}"
+            ) from exc

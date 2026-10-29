@@ -26,6 +26,8 @@ def _install_qgis_stubs() -> None:
     qgis_pyqt = _make_stub("qgis.PyQt")
     qgis_pyqt_core = _make_stub("qgis.PyQt.QtCore")
     qgis_pyqt_widgets = _make_stub("qgis.PyQt.QtWidgets")
+    qgis_pyqt_gui = _make_stub("qgis.PyQt.QtGui")
+    qgis_pyqt_xml = _make_stub("qgis.PyQt.QtXml")
 
     class _FakeQt:
         UserRole = 256
@@ -74,6 +76,17 @@ def _install_qgis_stubs() -> None:
                 return None
 
             return _noop
+
+    qgis_pyqt_core.QSize = _WidgetStub
+    qgis_pyqt_core.QPoint = _WidgetStub
+    qgis_pyqt_core.QVariant = type("_QVariant", (), {"String": str})
+    qgis_pyqt_core.QSettings = _WidgetStub
+    qgis_pyqt_core.QStandardPaths = _WidgetStub
+    qgis_pyqt_xml.QDomDocument = _WidgetStub
+    qgis_pyqt_gui.QIcon = _WidgetStub
+    qgis_pyqt_gui.QColor = _WidgetStub
+    qgis_pyqt_gui.QPalette = _WidgetStub
+    qgis_pyqt_gui.QCursor = _WidgetStub
 
     class _QComboBoxStub(_WidgetStub):
         def addItem(self, text, data=None):
@@ -189,6 +202,8 @@ def _install_qgis_stubs() -> None:
         ("qgis.PyQt", qgis_pyqt),
         ("qgis.PyQt.QtCore", qgis_pyqt_core),
         ("qgis.PyQt.QtWidgets", qgis_pyqt_widgets),
+        ("qgis.PyQt.QtGui", qgis_pyqt_gui),
+        ("qgis.PyQt.QtXml", qgis_pyqt_xml),
     ]:
         sys.modules[mod_name] = mod
 

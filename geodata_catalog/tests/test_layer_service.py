@@ -21,6 +21,7 @@ def test_get_layer_preserves_configuration_without_discovering_other_layers():
         "oracle-1", "AIRSPACE.FIR", "AIRSPACE.FIR", "oracle", "uri"
     )
     datasource_service = Mock(spec=DatasourceService)
+    datasource_service.get_datasource.return_value = datasource
     datasource_service.get_connector.return_value = connector
     repository = Mock(spec=LayerRepository)
     repository.list_by_datasource.return_value = [

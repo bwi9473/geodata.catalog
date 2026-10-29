@@ -25,6 +25,12 @@ def database_endpoint(datasource: Datasource) -> tuple[str, int, str]:
 
 def validate_database_config(config: dict[str, Any]) -> None:
     database_endpoint(Datasource("", "", DatasourceType.ORACLE, config))
+    if "catalog_id" in config and (
+        not isinstance(config["catalog_id"], str)
+        or not config["catalog_id"].strip()
+        or config["catalog_id"] != config["catalog_id"].strip()
+    ):
+        raise ConfigurationException("catalog_id must be a non-empty string without surrounding spaces.")
     color = config.get("environment_color", "#E7E7E7")
     if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise ConfigurationException("environment_color must be a hexadecimal color such as #59A947.")

@@ -39,11 +39,15 @@ class SavedLayerViewRepository:
 
     def upsert(self, view: SavedLayerView) -> None:
         items = self.list_all()
-        existing = self.get_by_name(view.datasource_id, view.layer_name, view.name)
+        existing = next((
+            item for item in items
+            if (item.catalog_id or item.datasource_id) == (view.catalog_id or view.datasource_id)
+            and item.layer_name == view.layer_name and item.name.casefold() == view.name.casefold()
+        ), None)
         view.updated_at = datetime.now(timezone.utc).isoformat()
         if existing is not None:
             view.id = existing.id
-            items = [item for item in items if item.id != existing.id]
+        items = [item for item in items if item.id != view.id]
         items.append(view)
         self._write_values(items)
 
@@ -60,7 +64,7 @@ class SavedLayerViewRepository:
                 item
                 for item in items
                 if item.id != view_id
-                and item.datasource_id == view.datasource_id
+                and (item.catalog_id or item.datasource_id) == (view.catalog_id or view.datasource_id)
                 and item.layer_name == view.layer_name
                 and item.name.casefold() == new_name.casefold()
             ),
@@ -72,6 +76,16 @@ class SavedLayerViewRepository:
         view.updated_at = datetime.now(timezone.utc).isoformat()
         self._write_values(items)
         return True
+
+    def set_catalog_id(self, datasource_id: str, catalog_id: str) -> None:
+        items = self.list_all()
+        changed = False
+        for item in items:
+            if item.datasource_id == datasource_id and item.catalog_id != catalog_id:
+                item.catalog_id = catalog_id
+                changed = True
+        if changed:
+            self._write_values(items)
 
     def delete(self, view_id: str) -> bool:
         items = self.list_all()

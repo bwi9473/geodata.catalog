@@ -55,6 +55,35 @@ geodata_catalog/           Root package
 
 ## Component Overview
 
+### Work profiles and portable Oracle catalogs
+
+`UserProfile` and `ProfileRepository` store local work modes and the selected mode.
+Developer bypasses catalog visibility filtering and enables configuration actions.
+User modes expose the Data Panel with either all layers (`visible_layer_ids: null`),
+no layers (`[]`), or an explicit list of stable logical layer IDs. This is a freely
+selectable UI/workflow feature, not an authorization boundary.
+
+`Datasource.catalog_id` uses the optional Oracle `config.catalog_id`, falling back
+to the existing datasource ID. Non-Oracle sources keep their datasource identity.
+`catalog_layer_id()` combines this logical catalog with the unchanged technical
+layer name. Oracle environments grouped this way must use identical source names.
+
+`LayerService` reads shared configuration first, then legacy endpoint configuration
+from sources in that catalog. Conflicting legacy display configurations raise a
+configuration error rather than choosing an environment-dependent result. Shared
+writes use the catalog key; original endpoint entries remain readable for migration.
+Runtime layer definitions always keep the actual connected datasource ID. Oracle
+provider URIs are never copied from another environment.
+
+Oracle discovery is combined with configured layer definitions and display-only
+configurations, retaining missing sources as unavailable rows. The Data Panel keeps
+these rows selectable to explain their status, while disabling all load actions.
+The plugin filters catalog rows and saved views by the selected profile, checks
+visibility/availability again at default/saved-view load entry points, and selects
+the connected endpoint once per logical catalog. Saved views carry an optional
+catalog ID, with legacy datasource-based views resolved through current source
+definitions. Saving a view uses logical catalog/layer/name identity across environments.
+
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │  QGIS                                                              │
