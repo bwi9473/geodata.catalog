@@ -6,7 +6,7 @@ from dataclasses import replace
 from geodata_catalog.exceptions import GeoDataCatalogException
 from geodata_catalog.logging_utils import PluginLogger
 from geodata_catalog.metadata.datasource_repository import DatasourceRepository
-from geodata_catalog.metadata.layer_config_repository import LayerConfig, LayerConfigRepository
+from geodata_catalog.metadata.layer_config_repository import LayerConfig, LayerConfigRepository, search_input_type
 from geodata_catalog.metadata.layer_repository import LayerRepository
 from geodata_catalog.metadata.profile_repository import ProfileRepository
 from geodata_catalog.metadata.saved_layer_view_repository import SavedLayerViewRepository
@@ -41,7 +41,7 @@ from geodata_catalog.ui.loadable_layers_dock import LoadableLayersDockWidget
 from geodata_catalog.ui.save_layer_view_dialog import SaveLayerViewDialog
 from geodata_catalog.ui.profile_dialog import ProfileDialog
 
-from qgis.PyQt.QtCore import Qt, QVariant
+from qgis.PyQt.QtCore import Qt, QTimer, QVariant
 from qgis.PyQt.QtXml import QDomDocument
 from qgis.PyQt.QtWidgets import QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox
 
@@ -1152,6 +1152,7 @@ class GeoDataCatalogPlugin:
             datasource = self._datasource_service.get_datasource(datasource_id)
             connector = self._datasource_service.get_connector(datasource)
             layer_definition = self._resolve_layer(datasource_id, layer_name)
+            map_was_shown = self._has_background_map()
             loaded_layer = self._loader_service.load_layer(layer_definition, connector)
             detected_geometry_type = self._geometry_type_from_qgis_layer(loaded_layer)
             if detected_geometry_type:
@@ -1159,12 +1160,29 @@ class GeoDataCatalogPlugin:
                 layer_definition.metadata["geometry_type"] = detected_geometry_type
                 if self._active_profile.is_developer:
                     self._layer_service.save_layer_configuration(layer_definition)
-            self._layer_toolbox_service.ensure_default_basemap_for_empty_project()
+            self._show_map_after_layer_load(map_was_shown)
             self._loaded_layer_keys.add(layer_definition.key())
             if self._loadable_layers_dock is not None:
                 self._loadable_layers_dock.refresh_loaded_state(self._loaded_layer_keys)
         except GeoDataCatalogException as exc:
             self._show_error("Load Layer", str(exc))
+
+    def _has_background_map(self) -> bool:
+        toolbox = getattr(self, "_layer_toolbox_service", None)
+        return True if toolbox is None else bool(toolbox.has_background_map())
+
+    def _show_map_after_layer_load(self, map_was_shown: bool) -> None:
+        """Show the preferred basemap and focus MUAC when a layer is loaded without a visible map."""
+        if map_was_shown or getattr(self, "_layer_toolbox_service", None) is None:
+            return
+        self._layer_toolbox_service.ensure_preferred_basemap_loaded()
+        if self._loadable_layers_dock is not None:
+            self._loadable_layers_dock.set_basemap_options(
+                self._layer_toolbox_service.list_basemap_options(),
+                self._layer_toolbox_service.current_basemap_name(),
+            )
+        # QGIS zooms to the first layer through a queued layer-tree/canvas update; focus afterwards.
+        QTimer.singleShot(0, self._on_focus_muac_requested)
 
     @staticmethod
     def _geometry_type_from_qgis_layer(layer) -> str | None:
@@ -1327,10 +1345,12 @@ class GeoDataCatalogPlugin:
             self._show_error("Saved Layer View", str(exc))
             return
         layer = self._find_saved_view_layer(view.id)
+        map_was_shown = True
         if layer is None:
             try:
                 datasource = self._datasource_service.get_datasource(view.datasource_id)
                 connector = self._datasource_service.get_connector(datasource)
+                map_was_shown = self._has_background_map()
                 layer = self._loader_service.load_layer(
                     definition,
                     connector,
@@ -1342,6 +1362,7 @@ class GeoDataCatalogPlugin:
         if layer is None:
             self._show_error("Saved Layer View", "The layer could not be loaded.")
             return
+        self._show_map_after_layer_load(map_was_shown)
         if hasattr(layer, "setName"):
             layer.setName(view.name)
         self._apply_layer_filter(layer, self._deserialize_layer_filter(view.filter_state))
@@ -1810,7 +1831,7 @@ class GeoDataCatalogPlugin:
     def _collect_distinct_values(
         self, qgis_layer, searchable_columns: list[dict[str, str | bool]] | None
     ) -> tuple[dict[str, list[str]], dict[str, dict[str, list[str]]]]:
-        """Extract distinct values for columns marked with use_distinct=True.
+        """Extract distinct values for dropdown, LOV and checkbox filters.
 
         Also collects per-parent-value mappings for columns that specify a
         ``filter_by`` parent column.  Both collections are built in a single
@@ -1850,10 +1871,7 @@ class GeoDataCatalogPlugin:
             layer_fields_by_key.get(str(col_def.get("name", "")).casefold(), "")
             for col_def in searchable_columns
             if col_def.get("name")
-            and (
-                col_def.get("use_distinct")
-                or (str(col_def.get("input_type", "")).strip().lower() == "dropdown")
-            )
+            and search_input_type(col_def) in {"dropdown", "lov", "checkbox"}
             and str(col_def.get("name")).casefold() in layer_fields_by_key
         }
         distinct_cols.discard("")

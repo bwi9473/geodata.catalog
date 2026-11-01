@@ -452,18 +452,19 @@ Each layer in the catalog can have its own **label column**, **flight-level filt
 |---|---|
 | **Layer Name** | Name shown for this layer in the QGIS **Layers** panel. Leave empty to keep the default name discovered from the source. |
 | **Label Column** | Name of the attribute field used as the QGIS feature label (e.g. `IDENT`, `name`). Overrides the global `label_column` set in the datasource configuration. Leave empty to use the connector default. |
-| **Enable Flight Level Filter** | Boolean toggle for this layer. When enabled, the Layer Filter dialog shows the FL range section at the bottom. When disabled, only custom attribute filters are shown. |
-| **Searchable Columns** | Table of columns made available as filters in the Layer Filter dialog. These custom fields are shown before the FL section. Each row has a **Field Name** (internal attribute name), a **Display Label** (shown in the UI), a **Data Type** (`varchar` or `numeric`), a **Use Distinct** checkbox, and an optional **Filter By** field. When **Use Distinct** is checked, the Layer Filter shows a dropdown with distinct values instead of a free-text field. When **Filter By** is set to the field name of another (parent) column, the dropdown for this column is automatically narrowed to only the values that co-occur with the currently selected parent value (cascading / dependent dropdowns). |
+| **Enable Flight Level Filter** | Boolean toggle for this layer. When enabled, the Layer Filter window has an active **Flight Levels** tab (second, after **Attributes**). When disabled, that tab is greyed out and only custom attribute filters are available. |
+| **Layer Attributes** | Select **Search** for fields to expose in the Attributes panel. Each row has a **Field Name**, **Display Label**, **Data Type** (`varchar` or `numeric`), **Display As** (`text field`, `dropdown`, `LOV`, or `checkbox`), and optional **Filter By** parent field. Dropdown and LOV fields load unique values automatically. Text, LOV and dropdown fields appear first; checkboxes follow in a compact, responsive group with labels beside the controls. |
 
 ### Searchable Columns — JSON representation
 
-Internally, searchable columns are stored in `layer_config.json` as an array of objects:
+Internally, fields are stored in `layer_config.json` as a `field_columns` array.
+Mark searchable fields with `"search": true`:
 
 ```json
 [
-  { "name": "STATUS",     "label": "Status",      "type": "varchar", "use_distinct": true },
-  { "name": "ROUTE_TYPE", "label": "Route Type",  "type": "varchar", "use_distinct": false },
-  { "name": "MIN_FL",     "label": "Min FL",      "type": "numeric",  "use_distinct": false }
+  { "name": "AREA_ID",    "label": "Area",       "type": "varchar", "input_type": "lov", "search": true },
+  { "name": "STATUS",     "label": "Status",     "type": "varchar", "input_type": "dropdown", "search": true },
+  { "name": "MIN_FL",     "label": "Min FL",     "type": "numeric", "input_type": "text field", "search": true }
 ]
 ```
 
@@ -474,8 +475,8 @@ The per-layer configuration object also contains:
   "datasource_id": "my_source",
   "layer_name": "MY_LAYER",
   "enable_fl_filter": true,
-  "searchable_columns": [
-    { "name": "STATUS", "label": "Status", "type": "varchar", "use_distinct": true }
+  "field_columns": [
+    { "name": "STATUS", "label": "Status", "type": "varchar", "input_type": "dropdown", "search": true }
   ]
 }
 ```
@@ -487,8 +488,10 @@ Each searchable column object supports the following keys:
 | `name` | ✅ | string | — | Internal attribute field name as it appears in the layer. |
 | `label` | ❌ | string | same as `name` | Display label shown in the Layer Filter dialog. |
 | `type` | ❌ | string | `"varchar"` | Data type: `"varchar"` or `"numeric"`. Numeric columns validate that entered values are numbers. |
-| `use_distinct` | ❌ | boolean | `false` | When `true`, the Layer Filter shows a dropdown populated with all distinct values of this column instead of a free-text field. |
-| `filter_by` | ❌ | string | — | Field name of a **parent** column (also in `searchable_columns` with `use_distinct: true`). When the parent dropdown has a value selected, the dropdown for this column is narrowed to only the values that co-occur with that parent value in the layer data (cascading dropdown). |
+| `input_type` | No | string | `"text field"` | `"text field"`, `"dropdown"`, `"lov"`, or `"checkbox"`. Dropdown and LOV load unique values; checkbox accepts Y/N values (case-insensitive), falling back to a dropdown with a logged warning for other values. |
+| `search` | No | boolean | `false` | Expose this field as an attribute filter. |
+| `use_distinct` | No | boolean | `false` | Legacy setting, no longer shown in Layer Config. Existing text fields with this enabled are treated as LOV fields. Saving from Layer Config replaces it with the corresponding `input_type`; existing dropdown and checkbox types are preserved. |
+| `filter_by` | ❌ | string | — | Field name of a **parent** field. With exactly one known parent value selected, the child's dropdown or LOV lists only co-occurring values. With no parent or multiple parent values, all values are available. |
 
 ### Cascading dropdowns (dependent filters)
 
@@ -500,20 +503,23 @@ When one attribute column depends on another — for example `flight_sectorid` o
     "name": "sectors_combinid",
     "label": "Sectors combination",
     "type": "varchar",
-    "use_distinct": true
+    "input_type": "dropdown",
+    "search": true
   },
   {
     "name": "flight_sectorid",
     "label": "Flight sector",
     "type": "varchar",
-    "use_distinct": true,
+    "input_type": "dropdown",
+    "search": true,
     "filter_by": "sectors_combinid"
   },
   {
     "name": "setting_sectorid",
     "label": "Setting sector",
     "type": "varchar",
-    "use_distinct": true
+    "input_type": "dropdown",
+    "search": true
   }
 ]
 ```
@@ -525,9 +531,9 @@ In the **Layer Filter** dialog this configuration produces:
 3. A **Setting sector** dropdown with no dependency (all values always visible).
 
 **Rules and behaviour:**
-- Both the parent column and the child column must have `use_distinct: true`.
-- If the parent dropdown is reset to **(no filter)**, the child dropdown immediately reverts to its full unfiltered list.
-- Any manually typed value in the **custom** free-text field of the child is not affected by the cascade; it is always used as-is.
+- Use **Display As: dropdown** or **LOV** for parent and child fields.
+- Clearing the parent or entering multiple parent values restores the child's full list.
+- Manually entered child values are preserved when the parent changes.
 - Multiple child columns can reference the same parent column.
 - Chained / multi-level cascades (grandparent → parent → child) are not supported — only one level of dependency is applied.
 
@@ -535,19 +541,24 @@ In the **Layer Filter** dialog this configuration produces:
 
 In the **Layer Filter** dialog:
 
-- **Free-text input** (when `use_distinct` is unchecked): You can enter multiple values separated by commas (for example: `A, B`).
+- **Text field**: You can enter multiple values separated by commas (for example: `A, B`).
   - For `varchar` columns, this becomes: `"COLUMN" IN ('A', 'B')`
   - For `numeric` columns, this becomes: `"COLUMN" IN (100, 200)`
   - Single values continue to use `=`.
 
-- **Dropdown selector** (when `use_distinct` is checked): Select a single distinct value from the list using the **select** field, or type one or more comma-separated values manually in the **custom** field below it. Select **(no filter)** from the dropdown to clear the dropdown selection. If both fields contain values, they are combined.
+- **Dropdown**: Use the down-arrow to select a unique value or type comma-separated values in the same editable control. Clear the input to remove its filter.
+- **LOV**: A text field with an embedded list icon, distinct from the dropdown arrow. Click the icon to open a searchable value list; use Ctrl+click or Shift+click to select multiple values, then confirm. Values can also be typed directly, separated by commas. Cancel leaves the input unchanged.
+- **Checkbox**: Three states: no filter (initial state), Y, or N. Checkboxes appear after the other fields, with compact spacing and inline labels.
 
 ### Flight level range filter
 
-When **Enable Flight Level Filter** is turned on in Layer Config, the Layer Filter dialog shows a dual-handle FL range slider at the bottom:
+When **Enable Flight Level Filter** is turned on in Layer Config, the **Flight Levels** tab of the Layer Filter window shows the FL range controls:
 
 - Set a lower and upper bound (for example `FL95` to `FL195`).
-- The filter keeps all sectors/features that **overlap** the selected interval.
+- Choose how zones must match the interval with the **Match** radio buttons (each has an info button with an example):
+  - **Overlaps** (default): keeps all sectors/features that touch the interval somewhere.
+  - **Fully within**: keeps only sectors/features whose complete FL band lies inside the interval.
+  - **Covers**: keeps only sectors/features that span the complete interval.
 - Releasing either slider handle immediately applies the FL filter and refreshes the map.
 - Uncheck **Enable flight level filter** in the Layer Filter dialog to apply only custom attribute filters without FL restriction.
 
@@ -560,10 +571,10 @@ When **Enable Flight Level Filter** is turned on in Layer Config, the Layer Filt
 - Per-layer config survives **Edit Source** operations on the parent datasource.
 - If **Layer Name** is set, loaded layers use that value in the QGIS Layers panel; when empty, the source default name is used.
 - Deleting a datasource also removes all its per-layer config entries from `layer_config.json`.
-- The **Layer Filter** dialog only shows the Attribute Search panel when at least one searchable column is defined for the layer.
+- The **Layer Filter** window always opens on the **Attributes** tab; its fields are only shown when at least one searchable column is defined for the layer.
 - Turn off **Enable Flight Level Filter** in Layer Config for layers where FL filtering is not relevant.
-- Use **Use Distinct** checkbox on searchable columns to show a dropdown with pre-filled values instead of free-text input, improving data quality and user experience for columns with enumerated values.
-- Use **Filter By** on a searchable column to create a cascading (dependent) dropdown: the child column's options are automatically narrowed when the user selects a value in the parent column. Both columns must have **Use Distinct** enabled.
+- Use **Display As: dropdown** for quick selection or **LOV** for a searchable multi-selection dialog with an embedded list icon.
+- Use **Filter By** to narrow a dropdown or LOV based on one selected parent value.
 - In **Custom View**, records are shown in an Excel-like table with sorting, paging, row checkboxes, and map highlighting on row selection.
 - Excel export requires `openpyxl` in the QGIS Python environment; CSV export works without extra packages.
 

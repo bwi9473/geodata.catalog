@@ -179,20 +179,24 @@ it and click **Load default layer**. You can switch to a user profile before loa
 
 The layer is added to the QGIS **Layers** panel and rendered on the map canvas.
 
+If no map background is shown yet (no catalog basemap and no other raster layer in the project), loading a layer — or applying a saved layer view that loads a layer — also adds the basemap selected in the Data Panel (default **World Map**) and zooms the map to the **MUAC control area**. When a map background is already visible, your current map view is kept.
+
 ### Layer Filter after layer is loaded
 
-After a layer has been loaded in QGIS, you can filter it with the **Layer Filter**. This dialog combines two filtering sections:
+After a layer has been loaded in QGIS, you can filter it with the **Layer Filter**. This window shows the filters as two tabs:
 
-1. **Attribute Search** — free-text or distinct-value equality filter on columns configured as `searchable_columns`.
-2. **Flight Level Filter** — optional range filter (shown below the custom fields) on numeric flight-level fields.
+1. **Attributes** (first tab, selected by default) — free-text or distinct-value equality filter on columns configured as `searchable_columns`.
+2. **Flight Levels** (second tab) — optional range filter on numeric flight-level fields.
+
+Each tab title shows its status, for example **Attributes (active)** or **Flight Levels (off)**.
 
 To use the filter:
 
 1. Click on the layer in the QGIS **Layers** panel to make it active.
 2. Right-click the layer in the QGIS **Layers** panel.
 3. Click **Layer Filter…**.
-4. Fill in custom attribute fields first.
-5. Adjust the FL range slider when needed.
+4. Fill in custom attribute fields on the **Attributes** tab first.
+5. Open the **Flight Levels** tab to adjust the FL range when needed.
 6. Click **Apply** for manual updates, or release the FL slider handle to apply immediately.
 
 You can also use **Quick presets** above the slider for one-click FL ranges.
@@ -201,12 +205,26 @@ You can also use **Quick presets** above the slider for one-click FL ranges.
 
 | Control | Result |
 |---|---|
-| Dual FL slider (`FLx` to `FLy`) | Shows all sectors/features that overlap the selected interval |
+| Dual FL slider (`FLx` to `FLy`) | Selects the FL range; the **Match** option decides which zones qualify |
+| **Match: Overlaps** (default) | Shows every zone that touches the range somewhere (zone lower ≤ Upper FL and zone upper ≥ Lower FL) |
+| **Match: Fully within** | Shows only zones completely inside the range (zone lower ≥ Lower FL and zone upper ≤ Upper FL) |
+| **Match: Covers** | Shows only zones that span the whole range (zone lower ≤ Lower FL and zone upper ≥ Upper FL) |
 | Quick preset buttons (`LOWER`, `HIGH`, ...) | Instantly sets a predefined range and applies the filter |
 | Slider handle release | Automatically applies the current FL range and refreshes the map |
 | **Enable flight level filter** unchecked | Removes FL filtering and keeps only base/attribute filters |
 
 The FL filter uses `fl_lower` and `fl_upper` (case-insensitive match).
+
+Each **Match** option has an info button (ⓘ) that explains the option with an example based on the current range. Example for the range `FL0`–`FL355`:
+
+| Zone | Overlaps | Fully within | Covers |
+|---|---|---|---|
+| `FL45`–`FL999` | shown | not shown | not shown |
+| `FL0`–`FL245` | shown | shown | not shown |
+| `FL0`–`FL999` | shown | not shown | shown |
+| `FL400`–`FL999` | not shown | not shown | not shown |
+
+Choosing a Match option does not refresh the layer on its own; click **Search** (or a quick preset) to apply it. **Reset** returns the option to **Overlaps**.
 
 **Attribute search:**
 
@@ -232,7 +250,7 @@ Each layer in the catalog can have its own layer name override, label column, se
 | **Label Column** | Attribute field used as the QGIS feature label. Overrides the global `label_column` from the datasource JSON. |
 | **Point marker** | Choose a supplied SVG or use **...** to open the QGIS SVG browser. The SVG itself is embedded in the saved configuration, instead of storing a computer-specific file path. Choose **Simple marker (default)** to remove the override. |
 | **Enable Flight Level Filter** | Controls whether the Flight Level section is shown in **Layer Filter…** for this layer. When disabled, only custom attribute filters are available. |
-| **Searchable Columns** | Table of columns shown as filters in the Layer Filter (displayed above the FL section). Each row has a **Field Name**, **Display Label**, **Data Type** (`varchar` or `numeric`), **Use Distinct**, and optional **Filter By**. When **Use Distinct** is checked, the Layer Filter shows both a dropdown (for quick distinct-value selection) and a free-text field (for manual multi-value entry). Select **(no filter)** in the dropdown to clear the dropdown selection. |
+| **Layer Attributes** | Enable **Search** for fields to show as filters. **Display As** offers `text field`, `dropdown`, `LOV`, and `checkbox`; **Filter By** optionally links a parent field. Dropdowns have a down-arrow; LOV text fields have an embedded list icon for searchable multi-selection. Both load unique values automatically. Text, LOV and dropdown fields appear before a compact checkbox group. Existing text fields with **Use Distinct** enabled are treated as LOV fields. |
 | **Custom View Columns** | Table of columns shown in the right-click **Open Custom View…** dialog as multi-record blocks. Each row has a **Field Name**, **Display Label**, and **Data Type**. |
 
 Use the **Add Row** / **Remove Row** buttons to manage the list of searchable columns, then click **Save**.
@@ -256,7 +274,7 @@ After loading a layer in QGIS:
 1. In the QGIS **Layers** panel, right-click the loaded layer.
 2. Click **Open Custom View…**.
 3. A separate window opens with an Excel-like table view.
-4. Use **Sort by**, **Ascending/Descending**, and page navigation (**Previous/Next**) to browse records.
+4. Click a column header to sort by that column (A→Z / small to large); click the same header again to reverse the order (Z→A), just like Windows Explorer. An arrow in the header shows the active column and direction. Use **Previous/Next** to browse pages.
 5. Use **Export CSV** or **Export Excel** to export all records in the current custom-view column layout.
 6. Click a row to highlight the feature on the map. Use the checkbox column for selection behavior similar to the QGIS attribute table; multiple checked rows are combined into one map selection.
 7. Selecting or deselecting features on the map also updates the checkboxes. Selected records move to the top, keeping the chosen sort order within the selected and unselected groups, and the view returns to the first page. Existing selections are checked when the window opens.
@@ -264,16 +282,18 @@ After loading a layer in QGIS:
 9. Use **Clear selection** to uncheck all records across all pages and clear this layer's map selection. Clicking records in the table does not immediately move rows under the mouse; selected-first ordering is applied on the next search, sort, page change, or map selection.
 
 The displayed fields are controlled by **Custom View Columns** in **Edit Layer Config…**.
-For layers configured without flight levels, **Flight Levels (not available)** is greyed out and cannot be clicked. Its tooltip explains why flight level filtering is unavailable.
+For layers configured without flight levels, the **Flight Levels (not available)** tab is greyed out and cannot be selected. Its tooltip explains why flight level filtering is unavailable.
 
 For layers with many filter fields:
 
+- On opening, the filter block grows to fit the attribute fields so no scrollbar is needed (the results keep at least 240 pixels; on very small screens a scrollbar can still appear).
 - The attribute fields automatically flow into one to four columns as you resize the window.
 - Inputs stay compact, with a maximum field width of 360 pixels, even for layers with only one filter field.
 - All configured filter fields remain visible; there is no separate field-name search or filled-fields-only mode.
 - Text filters are case-insensitive: `eham` and `EHAM` match the same values. Comma-separated values and numeric filters remain supported.
-- Drag the horizontal divider between filters and results to give either section more space. The **Search**, **Reset**, and **Save** buttons stay outside the scrolling field list.
+- Drag the horizontal divider between filters and results to give either section more space. The **Reset** and **Search** buttons stay together below the tabs, outside the scrolling field list.
 - **Reset** clears all filter values.
+- Click **Detach results** to show the results in a separate window. Click **Attach to filter** (or close the results window) to put them back. The window always opens with filters and results together.
 
 In the **Data Panel**, hover over a layer name to see its geometry type, geometry column, CRS, and source information. The separate layer-details block has been removed; saved views and presets remain available.
 

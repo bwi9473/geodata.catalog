@@ -404,6 +404,17 @@ class LayerToolboxService:
             return False
         return self.set_basemap(self.default_basemap_name())
 
+    def has_background_map(self) -> bool:
+        """Return True when the project already shows a catalog basemap or another raster background."""
+        if self._find_existing_basemap_layer() is not None:
+            return True
+        if self._project is None or QgsRasterLayer is None:
+            return False
+        try:
+            return any(isinstance(layer, QgsRasterLayer) for layer in self._project.mapLayers().values())
+        except Exception:
+            return False
+
     def current_basemap_name(self) -> str:
         layer = self._find_existing_basemap_layer()
         if layer is None:

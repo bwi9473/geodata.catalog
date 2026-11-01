@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from geodata_catalog.logging_utils import PluginLogger
+from geodata_catalog.metadata.layer_config_repository import search_input_type
+from geodata_catalog.metadata.system_configuration_repository import DEFAULT_FLIGHT_LEVEL_PRESETS
+from geodata_catalog.ui.layer_filter_dialog import FlightLevelRangeSlider
 from geodata_catalog.services.layer_filter_service import (
     AttributeSearchFilter,
     FlightLevelFilter,
@@ -15,8 +18,8 @@ from geodata_catalog.services.layer_filter_service import (
 
 try:
     from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
-    from qgis.PyQt.QtCore import QEvent, Qt
-    from qgis.PyQt.QtGui import QColor
+    from qgis.PyQt.QtCore import QEvent, Qt, QTimer
+    from qgis.PyQt.QtGui import QColor, QIcon
     from qgis.gui import QgsRubberBand
     from qgis.PyQt.QtWidgets import (
         QAbstractItemView,
@@ -37,10 +40,15 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QRadioButton,
+        QButtonGroup,
+        QStyle,
+        QToolButton,
         QScrollArea,
         QSizePolicy,
         QSpinBox,
         QSplitter,
+        QTabWidget,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
@@ -50,9 +58,11 @@ except ImportError:  # pragma: no cover
     QgsCoordinateTransformContext = None
     QgsVectorFileWriter = None
     QColor = None
+    QIcon = None
     QgsRubberBand = None
     QEvent = None
     Qt = None
+    QTimer = None
     QAbstractItemView = None
     QCheckBox = None
     QComboBox = None
@@ -71,10 +81,15 @@ except ImportError:  # pragma: no cover
     QMainWindow = object
     QMessageBox = None
     QPushButton = None
+    QRadioButton = None
+    QButtonGroup = None
+    QStyle = None
+    QToolButton = None
     QScrollArea = None
     QSizePolicy = None
     QSpinBox = None
     QSplitter = None
+    QTabWidget = None
     QTableWidget = None
     QTableWidgetItem = None
     QVBoxLayout = None
@@ -153,6 +168,9 @@ def _get_widget_attribute_delete_on_close():
 
 
 _WA_DELETE_ON_CLOSE = _get_widget_attribute_delete_on_close()
+_MIN_RESULTS_HEIGHT = 240
+_ATTRIBUTES_TAB = 0
+_FLIGHT_LEVELS_TAB = 1
 
 
 DEFAULT_UI_COLORS: dict[str, str] = {
@@ -222,9 +240,13 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._logger = logger
         self._layer = layer
+        self._layer_name = layer_name
         self._map_canvas = map_canvas
         self._map_highlights: list[Any] = []
         self._columns = [c for c in (columns or []) if c.get("name")]
+        # Same default as the former "Sort by" control: first column, ascending.
+        self._sort_column: str | None = self._columns[0]["name"] if self._columns else None
+        self._sort_descending = False
         self._all_records = records or []
         self._current_records: list[dict[str, object]] = []
         self._current_fids: list[int] = []
@@ -251,6 +273,9 @@ class LayerCustomViewWindow(QMainWindow):
         self._fl_lower_field_name = "fl_lower"
         self._fl_upper_field_name = "fl_upper"
         self._preset_buttons: list[tuple[Any, int, int]] = []
+        self._fl_mode_buttons: dict[str, Any] = {}
+        self._fl_mode_info_buttons: dict[str, Any] = {}
+        self._fl_mode_group = None
 
         self._quick_search_column_combo = None
         self._quick_search_edit = None
@@ -273,6 +298,14 @@ class LayerCustomViewWindow(QMainWindow):
         self._attribute_grid = None
         self._checkbox_grid = None
         self._attribute_layout_key = None
+        self._filter_tabs = None
+        self._results_widget = None
+        self._results_window = None
+        self._detach_results_btn = None
+        self._attached_splitter_sizes: list[int] | None = None
+        self._attached_window_height: int | None = None
+        self._closing = False
+        self._initial_fit_done = False
 
         body = QWidget(self)
         self.setCentralWidget(body)
@@ -284,7 +317,8 @@ class LayerCustomViewWindow(QMainWindow):
 
         self._build_filter_panel(initial_filter)
         results = QWidget()
-        results.setMinimumHeight(220)
+        results.setMinimumHeight(_MIN_RESULTS_HEIGHT)
+        self._results_widget = results
         self._results_layout = QVBoxLayout(results)
         self._results_layout.setContentsMargins(0, 0, 0, 0)
         self._splitter.addWidget(results)
@@ -304,6 +338,45 @@ class LayerCustomViewWindow(QMainWindow):
         filter_height = min(380, self._filter_panel.sizeHint().height())
         self._splitter.setSizes([filter_height, max(240, self.height() - filter_height - 32)])
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._initial_fit_done:
+            self._initial_fit_done = True
+            if QTimer is not None:
+                QTimer.singleShot(0, self._fit_filter_panel_to_content)
+
+    def _fit_filter_panel_to_content(self) -> None:
+        """Grow the filter panel so the attribute fields fit without a scrollbar."""
+        if self._results_window is not None:
+            return
+        self._refresh_attribute_fields()
+        scroll = self._attr_scroll_area
+        if scroll is None or self._attr_group is None:
+            return
+        needed = self._attr_group.sizeHint().height() - scroll.viewport().height()
+        if needed <= 0:
+            return
+        sizes = list(self._splitter.sizes())
+        if len(sizes) < 2:
+            return
+        available = max(0, sizes[1] - _MIN_RESULTS_HEIGHT)
+        grow = min(needed + 4, available)
+        if grow < needed + 4:
+            # Not enough room in the splitter: try to enlarge the window itself.
+            extra = needed + 4 - grow
+            screen = self.screen() if hasattr(self, "screen") else None
+            max_height = screen.availableGeometry().height() if screen is not None else self.height() + extra
+            new_height = min(self.height() + extra, max_height)
+            extra_gained = new_height - self.height()
+            if extra_gained > 0:
+                self.resize(self.width(), new_height)
+                sizes = list(self._splitter.sizes())
+                sizes[1] += extra_gained
+                grow += extra_gained
+        sizes[0] += grow
+        sizes[1] = max(_MIN_RESULTS_HEIGHT, sizes[1] - grow)
+        self._splitter.setSizes(sizes)
+
     @staticmethod
     def _normalize_ui_colors(ui_colors: dict[str, str] | None) -> dict[str, str]:
         palette = dict(DEFAULT_UI_COLORS)
@@ -321,15 +394,12 @@ class LayerCustomViewWindow(QMainWindow):
     def _normalize_flight_level_presets(
         raw_presets: list[dict[str, int | str]] | None,
     ) -> list[dict[str, int | str]]:
-        if not raw_presets:
-            return []
-
         normalized: list[dict[str, int | str]] = []
-        for item in raw_presets:
+        for item in raw_presets or DEFAULT_FLIGHT_LEVEL_PRESETS:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not name:
+            if not name or name.casefold() in ("enroute", "all"):
                 continue
             try:
                 lower = int(item.get("lower", 0))
@@ -341,6 +411,7 @@ class LayerCustomViewWindow(QMainWindow):
             if lower > upper:
                 lower, upper = upper, lower
             normalized.append({"name": name, "lower": lower, "upper": upper})
+        normalized.append({"name": "ALL", "lower": 0, "upper": 999})
         return normalized
 
     def _build_filter_panel(self, initial_filter: LayerFilter | None) -> None:
@@ -348,38 +419,14 @@ class LayerCustomViewWindow(QMainWindow):
         self._filter_panel = panel
         panel_layout = QVBoxLayout(panel)
 
-        toggle_row = QHBoxLayout()
-        self._toggle_fl_btn = QPushButton("Flight Levels")
-        self._toggle_attr_btn = QPushButton("Attributes")
-        self._reset_btn = QPushButton("Reset")
-        self._save_btn = QPushButton("Save")
-
-        self._toggle_fl_btn.setObjectName("FilterToggleButton")
-        self._toggle_attr_btn.setObjectName("FilterToggleButton")
-
-        self._toggle_fl_btn.setCheckable(True)
-        self._toggle_attr_btn.setCheckable(True)
-        self._toggle_fl_btn.setChecked(True)
-        self._toggle_attr_btn.setChecked(True)
-
-        self._toggle_fl_btn.clicked.connect(self._toggle_filter_sections)
-        self._toggle_attr_btn.clicked.connect(self._toggle_filter_sections)
-        self._reset_btn.clicked.connect(self._on_reset_filters)
-        self._save_btn.clicked.connect(self._on_save_filters)
-
-        toggle_row.addWidget(self._toggle_fl_btn)
-        toggle_row.addWidget(self._toggle_attr_btn)
-        toggle_row.addWidget(self._reset_btn)
-        toggle_row.addWidget(self._save_btn)
-        toggle_row.addStretch(1)
-        panel_layout.addLayout(toggle_row)
-
         self._flight_group = self._build_flight_level_group()
         self._attr_group = self._build_attribute_group()
 
-        if self._flight_group is not None:
-            panel_layout.addWidget(self._flight_group)
+        self._filter_tabs = QTabWidget()
+        self._filter_tabs.setObjectName("FilterTabs")
+
         if self._attr_group is not None:
+            self._attr_group.setTitle("")
             self._attr_scroll_area = QScrollArea()
             self._attr_scroll_area.setWidgetResizable(True)
             self._attr_scroll_area.setMinimumHeight(100)
@@ -391,10 +438,36 @@ class LayerCustomViewWindow(QMainWindow):
                     self._attr_scroll_area.setFrameShape(no_frame)
             self._attr_scroll_area.setWidget(self._attr_group)
             self._attr_scroll_area.viewport().installEventFilter(self)
-            panel_layout.addWidget(self._attr_scroll_area, 1)
+            attributes_page = self._attr_scroll_area
+        else:
+            attributes_page = QLabel("No searchable attributes are configured for this layer.")
+            attributes_page.setObjectName("FilterHintLabel")
+        self._filter_tabs.addTab(attributes_page, "Attributes")
+
+        if self._flight_group is not None:
+            self._flight_group.setTitle("")
+            flight_page = QWidget()
+            flight_layout = QVBoxLayout(flight_page)
+            flight_layout.setContentsMargins(0, 0, 0, 0)
+            flight_layout.addWidget(self._flight_group)
+            flight_layout.addStretch(1)
+        else:
+            flight_page = QLabel("This layer is configured without flight levels.")
+            flight_page.setObjectName("FilterHintLabel")
+        self._filter_tabs.addTab(flight_page, "Flight Levels")
+
+        if self._attr_group is None and self._show_flight_level:
+            self._filter_tabs.setCurrentIndex(_FLIGHT_LEVELS_TAB)
+        else:
+            self._filter_tabs.setCurrentIndex(_ATTRIBUTES_TAB)
+        panel_layout.addWidget(self._filter_tabs, 1)
 
         search_row = QHBoxLayout()
         search_row.addStretch(1)
+        self._reset_btn = QPushButton("Reset")
+        self._reset_btn.setToolTip("Clear all filter values and apply")
+        self._reset_btn.clicked.connect(self._on_reset_filters)
+        search_row.addWidget(self._reset_btn)
         self._search_btn = QPushButton("Search")
         self._search_btn.setDefault(True)
         self._search_btn.clicked.connect(self._on_search_clicked)
@@ -434,16 +507,13 @@ class LayerCustomViewWindow(QMainWindow):
         checkbox_columns = []
         for col_def in self._searchable_columns:
             col_name = str(col_def.get("name", "")).strip()
-            input_type = (col_def.get("input_type", "text field") or "text field").strip().lower()
+            input_type = search_input_type(col_def)
             if not col_name or input_type != "checkbox":
                 continue
-            if bool(col_def.get("use_distinct", False)) and not self._prepare_distinct_checkbox_column(col_def):
+            if not self._prepare_distinct_checkbox_column(col_def):
                 self._checkbox_fallback_columns.add(col_name)
                 continue
             checkbox_columns.append(col_def)
-        if checkbox_columns:
-            attr_form.addWidget(self._build_checkbox_filter_grid(checkbox_columns))
-
         field_grid = QGridLayout()
         field_grid.setContentsMargins(0, 0, 0, 0)
         field_grid.setHorizontalSpacing(14)
@@ -454,14 +524,13 @@ class LayerCustomViewWindow(QMainWindow):
             col_name = col_def.get("name", "")
             label = col_def.get("label", col_name)
             data_type = (col_def.get("type", "varchar") or "varchar").strip().lower()
-            input_type = (col_def.get("input_type", "text field") or "text field").strip().lower()
-            use_distinct = bool(col_def.get("use_distinct", False))
+            input_type = search_input_type(col_def)
             if not col_name:
                 continue
 
             if input_type == "checkbox" and col_name not in self._checkbox_fallback_columns:
                 continue
-            elif input_type == "dropdown":
+            elif input_type == "dropdown" or col_name in self._checkbox_fallback_columns:
                 self._lov_enabled_columns.add(col_name)
                 combo = QComboBox()
                 combo.setEditable(True)
@@ -562,28 +631,28 @@ class LayerCustomViewWindow(QMainWindow):
                 field_layout = QVBoxLayout(field_cell)
                 field_layout.setContentsMargins(0, 0, 0, 0)
                 field_layout.setSpacing(4)
-                label_row = QHBoxLayout()
-                label_row.setContentsMargins(0, 0, 0, 0)
-                label_row.setSpacing(6)
                 field_label = QLabel(str(label))
                 field_label.setObjectName("FilterFieldLabel")
                 field_label.setWordWrap(True)
                 field_label.setBuddy(edit)
-                label_row.addWidget(field_label)
-                if use_distinct:
+                field_layout.addWidget(field_label)
+                if input_type == "lov":
                     self._lov_enabled_columns.add(col_name)
-                    lov_btn = QPushButton("LOV")
-                    lov_btn.setObjectName("FilterLovButton")
-                    lov_btn.setToolTip(f"Open value list for {label}")
-                    lov_btn.setFixedWidth(44)
-                    lov_btn.clicked.connect(
+                    lov_action = edit.addAction(
+                        QIcon(str(Path(__file__).parent.parent / "resources" / "filter_lov.svg")),
+                        _qt_enum_value(QLineEdit, "ActionPosition", "TrailingPosition"),
+                    )
+                    lov_action.setText(f"Open value list for {label}")
+                    lov_action.setToolTip(f"LOV: select values for {label}")
+                    lov_action.triggered.connect(
                         lambda _checked=False, cn=col_name, cl=label: self._open_lov_selector(cn, cl)
                     )
-                    label_row.addWidget(lov_btn)
-                label_row.addStretch(1)
-                field_layout.addLayout(label_row)
                 field_layout.addWidget(edit)
                 self._attr_edits[col_name] = edit
+                if col_name in parent_cols_with_children:
+                    edit.textChanged.connect(
+                        lambda _text, pc=col_name: self._on_parent_filter_changed(pc)
+                    )
                 edit.textChanged.connect(self._on_attribute_filter_edited)
 
             field_cell.setSizePolicy(
@@ -597,6 +666,8 @@ class LayerCustomViewWindow(QMainWindow):
             self._attr_types[col_name] = data_type
 
         attr_form.addLayout(field_grid)
+        if checkbox_columns:
+            attr_form.addWidget(self._build_checkbox_filter_grid(checkbox_columns))
         attr_form.addStretch(1)
         return attr_group
 
@@ -605,7 +676,7 @@ class LayerCustomViewWindow(QMainWindow):
         grid = QGridLayout(container)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(8)
+        grid.setVerticalSpacing(6)
         self._checkbox_grid = grid
 
         for col_def in checkbox_columns:
@@ -630,18 +701,19 @@ class LayerCustomViewWindow(QMainWindow):
             )
 
             cell = QWidget(container)
+            cell.setMaximumWidth(180)
             cell.setSizePolicy(
-                _qt_enum_value(QSizePolicy, "Policy", "Ignored"),
+                _qt_enum_value(QSizePolicy, "Policy", "Maximum"),
                 _qt_enum_value(QSizePolicy, "Policy", "Preferred"),
             )
-            cell_layout = QVBoxLayout(cell)
+            cell_layout = QHBoxLayout(cell)
             cell_layout.setContentsMargins(0, 0, 0, 0)
             cell_layout.setSpacing(4)
             field_label = QLabel(label)
             field_label.setWordWrap(True)
             field_label.setBuddy(checkbox)
-            cell_layout.addWidget(field_label)
             cell_layout.addWidget(checkbox)
+            cell_layout.addWidget(field_label)
             cell.setToolTip(f"{label} ({col_name})")
             self._checkbox_fields.append((col_name, cell))
             self._attr_checks[col_name] = checkbox
@@ -661,25 +733,38 @@ class LayerCustomViewWindow(QMainWindow):
     def _refresh_attribute_fields(self, *_args) -> None:
         if self._attr_scroll_area is None:
             return
-        fields = self._checkbox_fields + self._attribute_fields
         available_width = max(0, self._attr_scroll_area.viewport().width() - 64)
-        columns = self._filter_grid_column_count(available_width, len(fields))
-        layout_key = (columns, tuple(name for name, _cell in fields))
+        columns = self._filter_grid_column_count(available_width, len(self._attribute_fields))
+        checkbox_width = max(
+            (min(180, cell.sizeHint().width()) for _name, cell in self._checkbox_fields),
+            default=0,
+        )
+        checkbox_columns = max(
+            1,
+            min(6, len(self._checkbox_fields),
+                (available_width + 10) // (max(140, checkbox_width) + 10)),
+        )
+        layout_key = (
+            columns, checkbox_columns,
+            tuple(name for name, _cell in self._attribute_fields + self._checkbox_fields),
+        )
         if layout_key == self._attribute_layout_key:
             return
         self._attribute_layout_key = layout_key
-        for grid, grid_fields in (
-            (self._checkbox_grid, self._checkbox_fields),
-            (self._attribute_grid, self._attribute_fields),
+        for grid, grid_fields, count, compact in (
+            (self._attribute_grid, self._attribute_fields, columns, False),
+            (self._checkbox_grid, self._checkbox_fields, checkbox_columns, True),
         ):
             if grid is None:
                 continue
             while grid.count():
                 grid.takeAt(0)
-            for column in range(4):
-                grid.setColumnStretch(column, 1 if column < columns else 0)
+            for column in range(7 if compact else 4):
+                grid.setColumnStretch(
+                    column, int(column == count) if compact else int(column < count)
+                )
             for index, (_name, cell) in enumerate(grid_fields):
-                grid.addWidget(cell, index // columns, index % columns)
+                grid.addWidget(cell, index // count, index % count)
 
     def _prepare_distinct_checkbox_column(self, col_def: dict[str, str | bool]) -> bool:
         col_name = str(col_def.get("name", "")).strip()
@@ -720,7 +805,7 @@ class LayerCustomViewWindow(QMainWindow):
         if len(invalid_values) > 8:
             shown_values = f"{shown_values}, ..."
         self._logger.warning(
-            f"Field '{label}' is configured as distinct checkbox, but contains values other than Y/N: {shown_values}. Rendering as dropdown."
+            f"Field '{label}' is configured as checkbox, but contains values other than Y/N: {shown_values}. Rendering as dropdown."
         )
 
     def _build_flight_level_group(self):
@@ -735,20 +820,38 @@ class LayerCustomViewWindow(QMainWindow):
         self._enabled_check.toggled.connect(self._on_fl_enabled_toggled)
         fl_form.addRow(self._enabled_check)
 
+        self._fl_range_slider = FlightLevelRangeSlider(0, 999)
+        self._fl_range_slider.setValues(0, 600)
+        self._fl_range_slider.setAccessibleName("Flight level range")
+        self._fl_range_slider.rangeChanged.connect(self._on_fl_range_changed)
+        self._fl_range_slider.rangeReleased.connect(self._on_fl_slider_released)
+        fl_form.addRow(self._fl_range_slider)
+
         self._lower_spin = QSpinBox()
         self._lower_spin.setRange(0, 999)
         self._lower_spin.setValue(0)
+        self._lower_spin.setPrefix("FL")
+        self._lower_spin.setAccessibleName("Lower flight level")
+        self._lower_spin.setKeyboardTracking(False)
+        self._lower_spin.valueChanged.connect(self._on_lower_spin_changed)
 
         self._upper_spin = QSpinBox()
         self._upper_spin.setRange(0, 999)
         self._upper_spin.setValue(600)
+        self._upper_spin.setPrefix("FL")
+        self._upper_spin.setAccessibleName("Upper flight level")
+        self._upper_spin.setKeyboardTracking(False)
+        self._upper_spin.valueChanged.connect(self._on_upper_spin_changed)
 
         spin_row = QHBoxLayout()
-        spin_row.addWidget(QLabel("Lower FL (>=)"))
-        spin_row.addWidget(self._lower_spin)
-        spin_row.addSpacing(20)
-        spin_row.addWidget(QLabel("Upper FL (<=)"))
-        spin_row.addWidget(self._upper_spin)
+        lower_label = QLabel("Lower")
+        lower_label.setBuddy(self._lower_spin)
+        upper_label = QLabel("Upper")
+        upper_label.setBuddy(self._upper_spin)
+        spin_row.addWidget(lower_label)
+        spin_row.addWidget(self._lower_spin, 1)
+        spin_row.addWidget(upper_label)
+        spin_row.addWidget(self._upper_spin, 1)
         fl_form.addRow(spin_row)
 
         if self._flight_level_presets:
@@ -765,33 +868,20 @@ class LayerCustomViewWindow(QMainWindow):
                 preset_row.addWidget(button)
                 self._preset_buttons.append((button, lower, upper))
             preset_row.addStretch(1)
-            fl_form.addRow("Quick presets", preset_row)
+            fl_form.addRow(preset_row)
+
+        fl_form.addRow("Match", self._build_fl_mode_row())
 
         return fl_group
 
     def _build_controls(self) -> None:
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Sort by"))
-
-        self._sort_column_combo = QComboBox()
-        self._sort_column_combo.setMinimumContentsLength(12)
-        self._sort_column_combo.setSizeAdjustPolicy(
-            _qt_enum_value(QComboBox, "SizeAdjustPolicy", "AdjustToMinimumContentsLengthWithIcon")
-        )
-        for col in self._columns:
-            self._sort_column_combo.addItem(col.get("label", col["name"]), col["name"])
-
-        self._sort_order_combo = QComboBox()
-        self._sort_order_combo.addItem("Ascending", "asc")
-        self._sort_order_combo.addItem("Descending", "desc")
 
         self._page_size_spin = QSpinBox()
         self._page_size_spin.setRange(1, 500)
         self._page_size_spin.setValue(50)
         self._page_size_spin.setPrefix("Page size: ")
-
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self._on_apply_clicked)
+        self._page_size_spin.valueChanged.connect(self._on_page_size_changed)
 
         self._export_format_combo = QComboBox()
         self._export_format_combo.addItem("CSV", self._EXPORT_FORMAT_CSV)
@@ -804,10 +894,11 @@ class LayerCustomViewWindow(QMainWindow):
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self._on_export_selected_records)
 
-        controls.addWidget(self._sort_column_combo)
-        controls.addWidget(self._sort_order_combo)
-        controls.addWidget(apply_btn)
         controls.addStretch(1)
+        self._detach_results_btn = QPushButton("Detach results")
+        self._detach_results_btn.setToolTip("Show the results in a separate window")
+        self._detach_results_btn.clicked.connect(self._toggle_results_detached)
+        controls.addWidget(self._detach_results_btn)
         self._results_layout.addLayout(controls)
 
         export_row = QHBoxLayout()
@@ -915,11 +1006,57 @@ class LayerCustomViewWindow(QMainWindow):
         self._table.itemChanged.connect(self._on_item_changed)
 
         self._table.setColumnWidth(0, 28)
-        self._table.horizontalHeader().setStretchLastSection(False)
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._on_header_clicked)
+        for col_idx, col in enumerate(self._columns, start=1):
+            header_item = self._table.horizontalHeaderItem(col_idx)
+            if header_item is not None:
+                header_item.setToolTip(
+                    f"Click to sort by {col.get('label', col['name'])}; click again to reverse"
+                )
+        self._update_sort_indicator()
         self._results_layout.addWidget(self._table, 1)
+
+    def _on_header_clicked(self, section: int) -> None:
+        col_idx = int(section) - 1
+        if col_idx < 0 or col_idx >= len(self._columns):
+            self._update_sort_indicator()
+            return
+        col_name = self._columns[col_idx]["name"]
+        if col_name == self._sort_column:
+            self._sort_descending = not self._sort_descending
+        else:
+            self._sort_column = col_name
+            self._sort_descending = False
+        self._current_page = 1
+        self._update_sort_indicator()
+        self._apply_view_state()
+        self._table.scrollToTop()
+
+    def _update_sort_indicator(self) -> None:
+        table = getattr(self, "_table", None)
+        if table is None or not hasattr(table, "horizontalHeader"):
+            return
+        header = table.horizontalHeader()
+        section = next(
+            (idx for idx, col in enumerate(self._columns, start=1) if col["name"] == self._sort_column),
+            -1,
+        )
+        order = _qt_enum_value(
+            Qt, "SortOrder", "DescendingOrder" if self._sort_descending else "AscendingOrder"
+        )
+        header.setSortIndicator(section, order)
+
+    def _on_page_size_changed(self, *_args) -> None:
+        self._current_page = 1
+        self._apply_view_state()
 
     def _apply_theme(self) -> None:
         palette = self._ui_colors
+        arrow_path = (Path(__file__).parent.parent / "resources" / "filter_dropdown.svg").as_posix()
         self.setStyleSheet(
             "\n".join(
                 [
@@ -940,15 +1077,16 @@ class LayerCustomViewWindow(QMainWindow):
                     f"QComboBox[filterDropdown='true'] {{ padding-right: 4px; }}",
                     f"QComboBox[filterDropdown='true']::drop-down {{ width: 24px; border: 0; background: {palette['panel_background']}; }}",
                     f"QComboBox[filterDropdown='true']::drop-down:hover {{ background: {palette['hover_background']}; }}",
+                    f'QComboBox#FilterInput::down-arrow {{ image: url("{arrow_path}"); width: 12px; height: 12px; }}',
                     f"QComboBox#FilterInput QAbstractItemView {{ border: 1px solid {palette['border']}; background: {palette['window_background']}; selection-background-color: {palette['header_background']}; selection-color: {palette['header_text']}; }}",
                     f"QLabel#FilterHintLabel {{ color: #475569; padding-bottom: 4px; }}",
                     f"QLabel#FilterFieldLabel {{ color: {palette['dataset_text']}; font-weight: 600; }}",
                     f"QPushButton {{ border: 1px solid {palette['border']}; border-radius: 6px; padding: 6px 10px; }}",
-                    f"QPushButton#FilterLovButton {{ background: {palette['window_background']}; color: {palette['text']}; font-size: 11px; padding: 4px 8px; }}",
-                    f"QPushButton#FilterLovButton:hover {{ background: {palette['hover_background']}; border-color: {palette['primary']}; }}",
-                    f"QPushButton#FilterToggleButton {{ background: {palette['window_background']}; color: {palette['text']}; font-weight: 600; border: 1px solid {palette['border']}; }}",
-                    f"QPushButton#FilterToggleButton:checked {{ background: {palette['primary']}; color: {palette['primary_text']}; border-color: {palette['primary']}; }}",
-                    f"QPushButton#FilterToggleButton:disabled {{ background: {palette['panel_background']}; color: #6B7280; border-color: {palette['border']}; }}",
+                    f"QTabWidget#FilterTabs::pane {{ border: 1px solid {palette['border']}; border-radius: 6px; top: -1px; background: {palette['panel_background']}; }}",
+                    f"QTabWidget#FilterTabs QTabBar::tab {{ background: {palette['window_background']}; color: {palette['text']}; border: 1px solid {palette['border']}; border-bottom: 0; border-top-left-radius: 6px; border-top-right-radius: 6px; padding: 6px 14px; margin-right: 2px; font-weight: 600; }}",
+                    f"QTabWidget#FilterTabs QTabBar::tab:selected {{ background: {palette['primary']}; color: {palette['primary_text']}; border-color: {palette['primary']}; }}",
+                    f"QTabWidget#FilterTabs QTabBar::tab:hover:!selected {{ background: {palette['hover_background']}; }}",
+                    f"QTabWidget#FilterTabs QTabBar::tab:disabled {{ background: {palette['panel_background']}; color: #6B7280; }}",
                     f"QPushButton#PrimaryButton {{ background: {palette['primary']}; color: {palette['primary_text']}; border-color: {palette['primary']}; font-weight: 600; }}",
                     f"QSplitter::handle:vertical {{ background: {palette['border']}; margin: 2px 0; border-radius: 2px; }}",
                     f"QSplitter::handle:vertical:hover {{ background: {palette['primary']}; }}",
@@ -960,35 +1098,32 @@ class LayerCustomViewWindow(QMainWindow):
             self._search_btn.style().unpolish(self._search_btn)
             self._search_btn.style().polish(self._search_btn)
 
-    def _toggle_filter_sections(self) -> None:
-        if self._flight_group is not None:
-            self._flight_group.setVisible(self._toggle_fl_btn.isChecked())
-        if self._attr_scroll_area is not None:
-            self._attr_scroll_area.setVisible(self._toggle_attr_btn.isChecked())
-        self._refresh_filter_toggle_buttons()
-
     def _refresh_filter_toggle_buttons(self) -> None:
         fl_active = bool(
             self._show_flight_level and self._enabled_check is not None and self._enabled_check.isChecked()
         )
         attr_active = self._has_active_attribute_filters()
 
-        self._toggle_fl_btn.setEnabled(self._show_flight_level)
-        if self._show_flight_level:
-            self._toggle_fl_btn.setText(
-                f"Flight Levels ({'active' if fl_active else 'off'})"
-            )
-            self._toggle_fl_btn.setToolTip("Show or hide the flight level filter controls")
-        else:
-            self._toggle_fl_btn.setChecked(False)
-            self._toggle_fl_btn.setCheckable(False)
-            self._toggle_fl_btn.setText("Flight Levels (not available)")
-            self._toggle_fl_btn.setToolTip(
-                "This layer is configured without flight levels. Flight level filtering is not available."
-            )
-        self._toggle_attr_btn.setText(
-            f"Attributes ({'active' if attr_active else 'off'})"
-        )
+        tabs = getattr(self, "_filter_tabs", None)
+        if tabs is not None:
+            tabs.setTabEnabled(_FLIGHT_LEVELS_TAB, self._show_flight_level)
+            if self._show_flight_level:
+                status = "off"
+                if fl_active:
+                    lower, upper = self._current_fl_range()
+                    status = f"FL{lower:03d} - {upper:03d}"
+                tabs.setTabText(
+                    _FLIGHT_LEVELS_TAB, f"Flight Levels ({status})"
+                )
+                tabs.setTabToolTip(_FLIGHT_LEVELS_TAB, "Show the flight level filter controls")
+            else:
+                tabs.setTabText(_FLIGHT_LEVELS_TAB, "Flight Levels (not available)")
+                tabs.setTabToolTip(
+                    _FLIGHT_LEVELS_TAB,
+                    "This layer is configured without flight levels. Flight level filtering is not available.",
+                )
+            tabs.setTabText(_ATTRIBUTES_TAB, f"Attributes ({'active' if attr_active else 'off'})")
+            tabs.setTabToolTip(_ATTRIBUTES_TAB, "Show the attribute filter controls")
 
         active_count = int(fl_active) + int(attr_active)
         if hasattr(self, "_filter_panel") and self._filter_panel is not None:
@@ -1034,8 +1169,12 @@ class LayerCustomViewWindow(QMainWindow):
                 self._lower_spin.setValue(int(fl.lower))
             if self._upper_spin is not None:
                 self._upper_spin.setValue(int(fl.upper))
+            self._set_fl_mode(fl.mode)
             self._update_fl_controls_enabled()
             self._sync_preset_button_state(int(fl.lower), int(fl.upper))
+
+        for combo in self._attr_combos.values():
+            self._set_combo_filter_text(combo, "")
 
         for attr in initial_filter.attributes:
             if attr.column in self._attr_edits:
@@ -1047,8 +1186,7 @@ class LayerCustomViewWindow(QMainWindow):
                 self._set_combo_filter_text(combo, attr.value)
 
     def _on_parent_filter_changed(self, parent_col: str) -> None:
-        parent_combo = self._attr_combos.get(parent_col)
-        if parent_combo is None:
+        if parent_col not in self._attr_combos and parent_col not in self._attr_edits:
             return
 
         for child_col, mapped_parent in self._filter_by_map.items():
@@ -1119,7 +1257,7 @@ class LayerCustomViewWindow(QMainWindow):
             if lower > upper:
                 lower, upper = upper, lower
             fl_enabled = bool(self._enabled_check.isChecked())
-            fl_mode = LayerFilterService.MODE_BETWEEN if fl_enabled else LayerFilterService.MODE_NONE
+            fl_mode = self._selected_fl_mode() if fl_enabled else LayerFilterService.MODE_NONE
             fl_filter = FlightLevelFilter(
                 mode=fl_mode,
                 lower=lower,
@@ -1184,6 +1322,7 @@ class LayerCustomViewWindow(QMainWindow):
             self._lower_spin.setValue(0)
         if self._upper_spin is not None:
             self._upper_spin.setValue(600)
+        self._set_fl_mode(LayerFilterService.MODE_OVERLAPS)
 
         for edit in self._attr_edits.values():
             edit.clear()
@@ -1196,6 +1335,19 @@ class LayerCustomViewWindow(QMainWindow):
         self._on_search_clicked()
 
     def eventFilter(self, watched: Any, event: Any) -> bool:
+        results_window = getattr(self, "_results_window", None)
+        if (
+            QEvent is not None
+            and results_window is not None
+            and watched is results_window
+            and event is not None
+            and event.type() == _qt_enum_value(QEvent, "Type", "Close")
+        ):
+            if not getattr(self, "_closing", False):
+                event.ignore()
+                self._attach_results()
+                return True
+            return False
         attr_scroll = getattr(self, "_attr_scroll_area", None)
         if (
             QEvent is not None
@@ -1475,18 +1627,10 @@ class LayerCustomViewWindow(QMainWindow):
         helper.setObjectName("FilterHintLabel")
         root.addWidget(helper)
 
-        ok_button = getattr(QDialogButtonBox, "Ok", None)
-        cancel_button = getattr(QDialogButtonBox, "Cancel", None)
-        if ok_button is None or cancel_button is None:
-            standard_button_enum = getattr(QDialogButtonBox, "StandardButton", None)
-            if standard_button_enum is not None:
-                ok_button = getattr(standard_button_enum, "Ok", ok_button)
-                cancel_button = getattr(standard_button_enum, "Cancel", cancel_button)
-
-        if ok_button is not None and cancel_button is not None:
-            buttons = QDialogButtonBox(ok_button | cancel_button)
-        else:
-            buttons = QDialogButtonBox()
+        buttons = QDialogButtonBox(
+            _qt_enum_value(QDialogButtonBox, "StandardButton", "Ok")
+            | _qt_enum_value(QDialogButtonBox, "StandardButton", "Cancel")
+        )
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         root.addWidget(buttons)
@@ -1500,15 +1644,8 @@ class LayerCustomViewWindow(QMainWindow):
 
         search_edit.textChanged.connect(_apply_search_filter)
 
-        accepted_value = getattr(QDialog, "Accepted", None)
-        if accepted_value is None:
-            dialog_code_enum = getattr(QDialog, "DialogCode", None)
-            if dialog_code_enum is not None:
-                accepted_value = getattr(dialog_code_enum, "Accepted", None)
-        if accepted_value is None:
-            accepted_value = 1
-
-        if dialog.exec() != accepted_value:
+        execute_dialog = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        if execute_dialog() != _qt_enum_value(QDialog, "DialogCode", "Accepted"):
             return
 
         selected_values = [
@@ -1558,10 +1695,11 @@ class LayerCustomViewWindow(QMainWindow):
         parent_col = self._filter_by_map.get(column_name, "")
         if parent_col:
             parent_combo = self._attr_combos.get(parent_col)
-            if parent_combo is not None:
+            parent_edit = self._attr_edits.get(parent_col)
+            if parent_combo is not None or parent_edit is not None:
                 selected_parent_val = self._resolve_single_parent_value(
                     parent_col,
-                    parent_combo.currentText(),
+                    parent_combo.currentText() if parent_combo is not None else parent_edit.text(),
                 )
                 if selected_parent_val:
                     per_parent = self._filtered_values_for_column(column_name)
@@ -1601,19 +1739,137 @@ class LayerCustomViewWindow(QMainWindow):
             "",
         )
 
-    def _on_save_filters(self) -> None:
-        self._on_search_clicked()
-
     def _update_fl_controls_enabled(self) -> None:
         if not self._show_flight_level or self._enabled_check is None:
             return
         enabled = bool(self._enabled_check.isChecked())
+        slider = getattr(self, "_fl_range_slider", None)
+        if slider is not None:
+            slider.setEnabled(enabled)
         if self._lower_spin is not None:
             self._lower_spin.setEnabled(enabled)
         if self._upper_spin is not None:
             self._upper_spin.setEnabled(enabled)
         for button, _, _ in self._preset_buttons:
             button.setEnabled(enabled)
+        for button in getattr(self, "_fl_mode_buttons", {}).values():
+            button.setEnabled(enabled)
+        for button in getattr(self, "_fl_mode_info_buttons", {}).values():
+            button.setEnabled(enabled)
+
+    _FL_MODE_OPTIONS = (
+        (LayerFilterService.MODE_OVERLAPS, "Overlaps"),
+        (LayerFilterService.MODE_WITHIN, "Fully within"),
+        (LayerFilterService.MODE_COVERS, "Covers"),
+    )
+
+    def _build_fl_mode_row(self):
+        row_widget = QWidget()
+        row = QHBoxLayout(row_widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        self._fl_mode_group = QButtonGroup(row_widget)
+        self._fl_mode_group.setExclusive(True)
+        info_icon = None
+        if QStyle is not None:
+            info_icon = self.style().standardIcon(
+                _qt_enum_value(QStyle, "StandardPixmap", "SP_MessageBoxInformation")
+            )
+        for mode, label in self._FL_MODE_OPTIONS:
+            radio = QRadioButton(label)
+            radio.setToolTip(self._fl_mode_explanation(mode, 0, 355))
+            self._fl_mode_group.addButton(radio)
+            self._fl_mode_buttons[mode] = radio
+            row.addWidget(radio)
+
+            info = QToolButton()
+            info.setObjectName("FlModeInfoButton")
+            info.setAutoRaise(True)
+            if info_icon is not None and not info_icon.isNull():
+                info.setIcon(info_icon)
+            else:
+                info.setText("i")
+            info.setToolTip(f"What does '{label}' mean?")
+            info.clicked.connect(lambda _checked=False, m=mode: self._show_fl_mode_info(m))
+            self._fl_mode_info_buttons[mode] = info
+            row.addWidget(info)
+            row.addSpacing(14)
+        row.addStretch(1)
+        self._fl_mode_buttons[LayerFilterService.MODE_OVERLAPS].setChecked(True)
+        return row_widget
+
+    def _selected_fl_mode(self) -> str:
+        for mode, button in getattr(self, "_fl_mode_buttons", {}).items():
+            if button.isChecked():
+                return mode
+        return LayerFilterService.MODE_OVERLAPS
+
+    def _set_fl_mode(self, mode: str | None) -> None:
+        buttons = getattr(self, "_fl_mode_buttons", {})
+        # Legacy above/below and "none" filters are shown with the default Overlaps option.
+        button = buttons.get(mode) or buttons.get(LayerFilterService.MODE_OVERLAPS)
+        if button is not None:
+            button.setChecked(True)
+
+    @staticmethod
+    def _fl_mode_explanation(mode: str, lower: int, upper: int) -> str:
+        if lower > upper:
+            lower, upper = upper, lower
+        rng = f"FL{lower}–FL{upper}"
+        if mode == LayerFilterService.MODE_WITHIN:
+            return (
+                "Fully within\n\n"
+                "Shows only zones that lie completely inside the selected range: "
+                "the zone's lower level is at or above Lower FL and its upper level is at or below Upper FL.\n\n"
+                f"Example with range {rng}:\n"
+                f"• Zone FL{lower}–FL{upper} → shown (exactly the range)\n"
+                + (
+                    f"• Zone FL{lower}–FL{upper + 10} → not shown (extends above FL{upper})\n"
+                    if upper + 10 <= 999 else ""
+                )
+                + f"• Zone FL45–FL999 → {'shown' if lower <= 45 and upper >= 999 else 'not shown'}\n\n"
+                "Use this to find zones that are entirely contained in your airspace band."
+            )
+        if mode == LayerFilterService.MODE_COVERS:
+            return (
+                "Covers\n\n"
+                "Shows only zones that span the complete selected range: "
+                "the zone's lower level is at or below Lower FL and its upper level is at or above Upper FL.\n\n"
+                f"Example with range {rng}:\n"
+                f"• Zone FL0–FL999 → shown (covers the whole range)\n"
+                f"• Zone FL{lower}–FL{upper} → shown (exactly the range)\n"
+                + (
+                    f"• Zone FL{lower + 10}–FL999 → not shown (starts above FL{lower})\n"
+                    if lower + 10 <= 999 else ""
+                )
+                + "\nUse this to find zones that are active over your entire airspace band."
+            )
+        return (
+            "Overlaps (default)\n\n"
+            "Shows every zone that touches the selected range somewhere: "
+            "the zone's lower level is at or below Upper FL and its upper level is at or above Lower FL.\n\n"
+            f"Example with range {rng}:\n"
+            f"• Zone FL45–FL999 → {'shown' if 45 <= upper and 999 >= lower else 'not shown'}"
+            " (part of the zone is inside the range)\n"
+            + (
+                f"• Zone FL{upper + 10}–FL999 → not shown (starts above FL{upper})\n"
+                if upper + 10 <= 999 else ""
+            )
+            + f"• Zone FL{lower}–FL{upper} → shown\n\n"
+            "Use this to find everything that is (partly) active in your airspace band."
+        )
+
+    def _current_fl_range(self) -> tuple[int, int]:
+        lower = int(self._lower_spin.value()) if self._lower_spin is not None else 0
+        upper = int(self._upper_spin.value()) if self._upper_spin is not None else 600
+        return (lower, upper) if lower <= upper else (upper, lower)
+
+    def _show_fl_mode_info(self, mode: str) -> None:
+        lower, upper = self._current_fl_range()
+        label = dict(self._FL_MODE_OPTIONS).get(mode, "Overlaps")
+        QMessageBox.information(
+            self, f"Flight level match: {label}", self._fl_mode_explanation(mode, lower, upper)
+        )
 
     def _on_preset_clicked(self, lower: int, upper: int) -> None:
         if self._enabled_check is not None and not self._enabled_check.isChecked():
@@ -1623,6 +1879,28 @@ class LayerCustomViewWindow(QMainWindow):
         if self._upper_spin is not None:
             self._upper_spin.setValue(int(upper))
         self._sync_preset_button_state(int(lower), int(upper))
+        self._on_search_clicked()
+
+    def _on_fl_range_changed(self, lower: int, upper: int) -> None:
+        for spin, value in ((self._lower_spin, lower), (self._upper_spin, upper)):
+            if spin is not None:
+                blocked = spin.blockSignals(True)
+                spin.setValue(value)
+                spin.blockSignals(blocked)
+        self._sync_preset_button_state(lower, upper)
+        self._refresh_filter_toggle_buttons()
+
+    def _on_lower_spin_changed(self, lower: int) -> None:
+        if lower > self._upper_spin.value():
+            self._upper_spin.setValue(lower)
+        self._fl_range_slider.setValues(lower, self._upper_spin.value())
+
+    def _on_upper_spin_changed(self, upper: int) -> None:
+        if upper < self._lower_spin.value():
+            self._lower_spin.setValue(upper)
+        self._fl_range_slider.setValues(self._lower_spin.value(), upper)
+
+    def _on_fl_slider_released(self, _lower: int, _upper: int) -> None:
         self._on_search_clicked()
 
     def _sync_preset_button_state(self, lower: int, upper: int) -> None:
@@ -1663,10 +1941,6 @@ class LayerCustomViewWindow(QMainWindow):
         self._all_records = records
         self._record_order_cache = None
 
-    def _on_apply_clicked(self) -> None:
-        self._current_page = 1
-        self._apply_view_state()
-
     def _on_prev_page(self) -> None:
         if self._current_page > 1:
             self._current_page -= 1
@@ -1702,8 +1976,8 @@ class LayerCustomViewWindow(QMainWindow):
         self._update_selection_controls()
 
     def _sorted_records(self) -> list[dict[str, object]]:
-        col_name = self._sort_column_combo.currentData()
-        reverse = self._sort_order_combo.currentData() == "desc"
+        col_name = self._sort_column
+        reverse = bool(self._sort_descending)
         cache_key = (
             id(self._all_records), col_name, reverse,
             self._quick_search_active_text, self._quick_search_active_column,
@@ -1711,7 +1985,7 @@ class LayerCustomViewWindow(QMainWindow):
         cache = self._record_order_cache
         if cache is None or cache[0] != cache_key:
             entries = list(self._all_records)
-            if entries and self._sort_column_combo.count():
+            if entries and col_name:
                 entries.sort(key=lambda rec: self._record_sort_key(rec, col_name), reverse=reverse)
             matching_fids = {int(rec.get("__fid", -1)) for rec in self._quick_filtered_records()}
             cache = (cache_key, entries, matching_fids)
@@ -1907,10 +2181,76 @@ class LayerCustomViewWindow(QMainWindow):
         self._map_highlights = []
 
     def closeEvent(self, event) -> None:
+        self._closing = True
+        if self._results_window is not None:
+            self._results_window.removeEventFilter(self)
+            self._results_window.close()
+            self._results_window.deleteLater()
+            self._results_window = None
         if self._layer is not None:
             self._layer.selectionChanged.disconnect(self._on_layer_selection_changed)
         self._clear_map_highlights()
         super().closeEvent(event)
+
+    def is_results_detached(self) -> bool:
+        return self._results_window is not None
+
+    def _toggle_results_detached(self, *_args) -> None:
+        if self._results_window is None:
+            self._detach_results()
+        else:
+            self._attach_results()
+
+    def _detach_results(self) -> None:
+        results = self._results_widget
+        if results is None or self._results_window is not None:
+            return
+        self._attached_splitter_sizes = list(self._splitter.sizes())
+        self._attached_window_height = self.height()
+
+        window = QWidget(self, _qt_enum_value(Qt, "WindowType", "Window"))
+        window.setWindowTitle(f"Results - {self._layer_name or 'Layer'}")
+        layout = QVBoxLayout(window)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(results)
+        results.show()
+        window.installEventFilter(self)
+        self._results_window = window
+
+        self._detach_results_btn.setText("Attach to filter")
+        self._detach_results_btn.setToolTip("Put the results back into the filter window")
+
+        removed_height = self._attached_splitter_sizes[-1] + self._splitter.handleWidth()
+        window.resize(max(self.width(), 800), max(self._attached_splitter_sizes[-1], 400))
+        geometry = self.frameGeometry()
+        window.move(geometry.left() + 40, geometry.top() + 40)
+        self.resize(self.width(), max(self.minimumSizeHint().height(), self.height() - removed_height))
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _attach_results(self) -> None:
+        window = self._results_window
+        results = self._results_widget
+        if window is None or results is None:
+            return
+        self._results_window = None
+        window.removeEventFilter(self)
+        self._splitter.addWidget(results)
+        results.show()
+        self._splitter.setStretchFactor(1, 1)
+        window.hide()
+        window.deleteLater()
+
+        self._detach_results_btn.setText("Detach results")
+        self._detach_results_btn.setToolTip("Show the results in a separate window")
+
+        if self._attached_window_height:
+            self.resize(self.width(), max(self.height(), self._attached_window_height))
+        if self._attached_splitter_sizes:
+            self._splitter.setSizes(self._attached_splitter_sizes)
+        self.raise_()
+        self.activateWindow()
 
     def _on_export_selected_records(self) -> None:
         if self._layer is None:

@@ -518,13 +518,40 @@ def test_default_load_retains_loader_pipeline_and_only_developer_updates_catalog
     plugin._geometry_type_from_qgis_layer = Mock(return_value="POLYGON")
     catalog.connector.get_layers.return_value = [definition("prod")]
     plugin._catalog_rows()
+    plugin._layer_toolbox_service.has_background_map.return_value = True
     plugin._on_load_layer("prod", "AIRSPACE.FIR")
     layer, connector = plugin._loader_service.load_layer.call_args.args
     assert layer.datasource_id == "prod"
     assert connector is catalog.connector
-    plugin._layer_toolbox_service.ensure_default_basemap_for_empty_project.assert_called_once()
+    plugin._layer_toolbox_service.ensure_preferred_basemap_loaded.assert_not_called()
+    plugin._layer_toolbox_service.focus_muac_on_canvas.assert_not_called()
     assert plugin._loaded_layer_keys == {"prod:AIRSPACE.FIR"}
     assert bool(catalog.layers.list_all()) == (role == "developer")
+
+
+def test_loading_layer_without_visible_map_shows_basemap_and_focuses_muac(catalog):
+    plugin = catalog.plugin
+    plugin.iface = Mock()
+    plugin._loaded_layer_keys = set()
+    plugin._loadable_layers_dock = Mock()
+    toolbox = plugin._layer_toolbox_service = Mock()
+    toolbox.has_background_map.return_value = False
+    toolbox.current_basemap_name.return_value = "World Map"
+    order = Mock()
+    toolbox.has_background_map.side_effect = lambda: (order.check(), False)[1]
+    plugin._loader_service.load_layer.side_effect = lambda *args, **kwargs: order.load()
+    toolbox.ensure_preferred_basemap_loaded.side_effect = lambda: order.basemap()
+    toolbox.focus_muac_on_canvas.side_effect = lambda iface: order.focus(iface)
+    plugin._geometry_type_from_qgis_layer = Mock(return_value=None)
+    catalog.connector.get_layers.return_value = [definition("prod")]
+    plugin._catalog_rows()
+
+    plugin._on_load_layer("prod", "AIRSPACE.FIR")
+
+    assert [call[0] for call in order.mock_calls] == ["check", "load", "basemap", "focus"]
+    order.focus.assert_called_once_with(plugin.iface)
+    plugin._loadable_layers_dock.set_basemap_options.assert_called_once()
+    assert plugin._loadable_layers_dock.set_basemap_options.call_args.args[1] == "World Map"
 
 
 def test_profile_assignment_keeps_layer_metadata_if_source_disappears(catalog, monkeypatch):

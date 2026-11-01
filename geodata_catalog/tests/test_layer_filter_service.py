@@ -231,3 +231,82 @@ def test_layer_filter_fl_and_attribute_combined():
         combined, [{"name": "STATUS", "label": "Status"}]
     )
     assert parsed_attrs[0].value == "ACTIVE"
+
+
+# ------------------------------------------------------------------ #
+# Flight-level match modes                                            #
+# ------------------------------------------------------------------ #
+
+_FL_ZONES = {
+    "S_EBWXCHAGIV": (45, 999),
+    "S_EDD44": (0, 660),
+    "LOW_ONLY": (0, 245),
+    "INSIDE": (100, 200),
+    "HIGH_ONLY": (400, 660),
+    "FULL": (0, 999),
+}
+
+
+def _matching_zones(mode, lower, upper):
+    connection = sqlite3.connect(":memory:")
+    connection.execute('CREATE TABLE zones (name TEXT, "FL_LOWER" TEXT, "FL_UPPER" TEXT)')
+    connection.executemany(
+        "INSERT INTO zones VALUES (?, ?, ?)",
+        [(name, str(lo), str(hi)) for name, (lo, hi) in _FL_ZONES.items()],
+    )
+    expression = LayerFilterService.build_fl_expression(
+        FlightLevelFilter(mode, lower, upper, True, "FL_LOWER", "FL_UPPER")
+    )
+    rows = connection.execute(f"SELECT name FROM zones WHERE {expression}").fetchall()
+    connection.close()
+    return {name for (name,) in rows}
+
+
+def test_fl_overlaps_mode_matches_zones_touching_the_range():
+    assert _matching_zones(LayerFilterService.MODE_OVERLAPS, 0, 355) == {
+        "S_EBWXCHAGIV", "S_EDD44", "LOW_ONLY", "INSIDE", "FULL",
+    }
+
+
+def test_fl_within_mode_only_matches_zones_inside_the_range():
+    assert _matching_zones(LayerFilterService.MODE_WITHIN, 0, 355) == {"LOW_ONLY", "INSIDE"}
+
+
+def test_fl_covers_mode_only_matches_zones_spanning_the_range():
+    assert _matching_zones(LayerFilterService.MODE_COVERS, 0, 355) == {"S_EDD44", "FULL"}
+    assert _matching_zones(LayerFilterService.MODE_COVERS, 100, 355) == {
+        "S_EBWXCHAGIV", "S_EDD44", "FULL",
+    }
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [LayerFilterService.MODE_OVERLAPS, LayerFilterService.MODE_WITHIN, LayerFilterService.MODE_COVERS],
+)
+@pytest.mark.parametrize("lower,upper", [(0, 355), (245, 245), (100, 660)])
+def test_fl_match_modes_round_trip_through_subset_string(mode, lower, upper):
+    fl = FlightLevelFilter(mode, lower, upper, True, "FL_LOWER", "FL_UPPER")
+    fl_expr = LayerFilterService.build_fl_expression(fl)
+    attr_expr = LayerFilterService.build_attribute_expression(
+        [AttributeSearchFilter(column="STATUS", value="ACTIVE")]
+    )
+    combined = f"(base = 1) AND ({fl_expr}) AND ({attr_expr})"
+
+    parsed = LayerFilterService.parse_fl_from_subset_string(combined)
+    assert (parsed.mode, parsed.lower, parsed.upper) == (mode, lower, upper)
+    assert (parsed.lower_field, parsed.upper_field) == ("FL_LOWER", "FL_UPPER")
+    assert LayerFilterService.parse_fl_from_subset_string(fl_expr).mode == mode
+
+    stripped = LayerFilterService.strip_fl_from_subset_string(combined)
+    assert "CAST" not in stripped
+    assert "base = 1" in stripped and "STATUS" in stripped
+    assert LayerFilterService.strip_fl_from_subset_string(f"({fl_expr})") == ""
+    assert LayerFilterService.strip_fl_from_subset_string(fl_expr) == ""
+    assert LayerFilterService.strip_fl_from_subset_string(f"(base = 1) AND ({fl_expr})") == "base = 1"
+
+
+def test_legacy_single_clause_fl_modes_still_parse():
+    above = LayerFilterService.parse_fl_from_subset_string('CAST("fl_lower" AS INTEGER) >= 100')
+    below = LayerFilterService.parse_fl_from_subset_string('CAST("fl_upper" AS INTEGER) <= 300')
+    assert (above.mode, above.lower) == (LayerFilterService.MODE_ABOVE, 100)
+    assert (below.mode, below.upper) == (LayerFilterService.MODE_BELOW, 300)

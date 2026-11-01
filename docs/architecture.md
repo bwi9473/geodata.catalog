@@ -150,7 +150,7 @@ Represents a single layer within a datasource.
 | `default_style_file` | `str\|None` | Absolute path to a `.qml` style file |
 | `filter_expression` | `str\|None` | Optional QGIS subset string applied before the layer is added to the project |
 | `label_column` | `str\|None` | Field name to use as the QGIS label for each feature (single column, optional) |
-| `searchable_columns` | `list[dict]\|None` | Columns exposed as search fields in the Layer Filter. Each dict: `{"name": "COL", "label": "Display label", "type": "varchar\|numeric", "use_distinct": bool}`. When `use_distinct` is `true`, a dropdown with distinct values is shown instead of free-text input. |
+| `searchable_columns` | `list[dict]\|None` | Runtime columns exposed as search fields, selected with `search: true` in the layer configuration's `field_columns`. Each dict supports `name`, `label`, `type`, `input_type` (`text field`, `dropdown`, `lov`, `checkbox`), and optional `filter_by`. Dropdown, LOV and checkbox collect unique values automatically. Legacy text fields with `use_distinct: true` resolve to LOV; Layer Config saves these as `input_type: "lov"`. |
 | `metadata` | `dict` | Connector-specific extra fields |
 
 ### `DatasourceType` enum
@@ -211,6 +211,11 @@ UI: user double-clicks a layer (or clicks Load Layer)
                   ├── Applies subset filter when filter_expression is set
                     ├── StyleService.apply_default_style(layer, style_file)
                     └── QgsProject.instance().addMapLayer(layer)
+              └── GeoDataCatalogPlugin._show_map_after_layer_load(map_was_shown)
+                    (only when LayerToolboxService.has_background_map() was False before loading)
+                    ├── LayerToolboxService.ensure_preferred_basemap_loaded()
+                    └── QTimer.singleShot(0, focus MUAC) — deferred so it runs after QGIS'
+                        automatic zoom to the first layer in an empty project
 ```
 
 ---
@@ -279,11 +284,13 @@ See [Development](development.md) for instructions on adding a new connector.
 
 After a layer is loaded, GeoData Catalog allows filtering by flight levels via the **Flight Level Filter** button in the dock panel.
 
-The dialog supports three modes:
+The filter service supports these modes (the Layer Filter window offers Overlaps, Fully within and Covers as **Match** radio buttons; the at-or-above/below modes are still recognised in existing subset strings):
 
 | Mode | Meaning | Expression |
 |---|---|---|
-| Between lower and upper limits | Show features overlapping a selected interval | `CAST("fl_lower" AS INTEGER) <= upper AND CAST("fl_upper" AS INTEGER) >= lower` |
+| Between lower and upper limits (UI: **Overlaps**, stored as `between`) | Show features overlapping a selected interval | `CAST("fl_lower" AS INTEGER) <= upper AND CAST("fl_upper" AS INTEGER) >= lower` |
+| Fully within (UI: **Fully within**, stored as `within`) | Show features whose complete FL band lies inside the interval | `CAST("fl_lower" AS INTEGER) >= lower AND CAST("fl_upper" AS INTEGER) <= upper` |
+| Covers (UI: **Covers**, stored as `covers`) | Show features that span the complete interval | `lower >= CAST("fl_lower" AS INTEGER) AND upper <= CAST("fl_upper" AS INTEGER)` |
 | At or above a lower limit | Show features whose lower limit is greater than or equal to the chosen value | `CAST("fl_lower" AS INTEGER) >= lower` |
 | At or below an upper limit | Show features whose upper limit is less than or equal to the chosen value | `CAST("fl_upper" AS INTEGER) <= upper` |
 

@@ -21,76 +21,64 @@ def test_version_number_display_omits_decimal_for_integer_values():
     assert LayerCustomViewWindow._format_record_value("version_nr", "2235.0") == "2235"
 
 
-class _FilterToggleButton:
+class _FilterTabs:
     def __init__(self):
-        self.checked = True
-        self.checkable = True
-        self.enabled = True
-        self.text = ""
-        self.tooltip = ""
+        self.texts = {0: "Attributes", 1: "Flight Levels"}
+        self.tooltips = {}
+        self.enabled = {0: True, 1: True}
 
-    def setEnabled(self, enabled):
-        self.enabled = enabled
+    def setTabEnabled(self, index, enabled):
+        self.enabled[index] = enabled
 
-    def setChecked(self, checked):
-        self.checked = checked
+    def setTabText(self, index, text):
+        self.texts[index] = text
 
-    def setCheckable(self, checkable):
-        self.checkable = checkable
-
-    def setText(self, text):
-        self.text = text
-
-    def setToolTip(self, tooltip):
-        self.tooltip = tooltip
+    def setTabToolTip(self, index, tooltip):
+        self.tooltips[index] = tooltip
 
 
-def _filter_toggle_window(show_flight_level, enabled):
+def _filter_tabs_window(show_flight_level, enabled, attr_active=False):
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     window._show_flight_level = show_flight_level
     window._enabled_check = type("_Check", (), {"isChecked": lambda self: enabled})()
-    window._toggle_fl_btn = _FilterToggleButton()
-    window._toggle_attr_btn = _FilterToggleButton()
+    window._filter_tabs = _FilterTabs()
     window._filter_panel = None
-    window._has_active_attribute_filters = lambda: False
+    window._has_active_attribute_filters = lambda: attr_active
+    window._current_fl_range = lambda: (365, 999)
     return window
 
 
-def test_flight_level_toggle_is_disabled_for_layers_without_flight_levels():
-    window = _filter_toggle_window(False, True)
+def test_flight_level_tab_is_disabled_for_layers_without_flight_levels():
+    window = _filter_tabs_window(False, True)
 
     window._refresh_filter_toggle_buttons()
 
-    button = window._toggle_fl_btn
-    assert button.enabled is False
-    assert button.checked is False
-    assert button.checkable is False
-    assert button.text == "Flight Levels (not available)"
-    assert "configured without flight levels" in button.tooltip
-    assert window._toggle_attr_btn.enabled is True
-    window._refresh_filter_toggle_buttons()
-    assert button.enabled is False
+    tabs = window._filter_tabs
+    assert tabs.enabled[1] is False
+    assert tabs.texts[1] == "Flight Levels (not available)"
+    assert "configured without flight levels" in tabs.tooltips[1]
+    assert tabs.enabled[0] is True
+    assert tabs.texts[0] == "Attributes (off)"
 
 
-def test_flight_level_toggle_stays_available_when_filter_is_off():
-    window = _filter_toggle_window(True, False)
+def test_flight_level_tab_stays_available_when_filter_is_off():
+    window = _filter_tabs_window(True, False)
 
     window._refresh_filter_toggle_buttons()
 
-    button = window._toggle_fl_btn
-    assert button.enabled is True
-    assert button.checkable is True
-    assert button.text == "Flight Levels (off)"
-    assert "Show or hide" in button.tooltip
+    tabs = window._filter_tabs
+    assert tabs.enabled[1] is True
+    assert tabs.texts[1] == "Flight Levels (off)"
+    assert "flight level filter controls" in tabs.tooltips[1]
 
 
-def test_flight_level_toggle_shows_active_filter():
-    window = _filter_toggle_window(True, True)
+def test_filter_tabs_show_active_status():
+    window = _filter_tabs_window(True, True, attr_active=True)
 
     window._refresh_filter_toggle_buttons()
 
-    assert window._toggle_fl_btn.enabled is True
-    assert window._toggle_fl_btn.text == "Flight Levels (active)"
+    assert window._filter_tabs.texts[1] == "Flight Levels (FL365 - 999)"
+    assert window._filter_tabs.texts[0] == "Attributes (active)"
 
 
 def test_resolve_single_parent_value_accepts_one_known_value():
@@ -175,6 +163,9 @@ class _FieldBrowserWidget(_DummyLineEdit):
 
     def setVisible(self, visible):
         self.visible = visible
+
+    def sizeHint(self):
+        return type("_Size", (), {"width": lambda self: 140})()
 
 
 class _FieldGrid:
@@ -277,6 +268,24 @@ def test_field_layout_reflows_existing_widgets_without_gaps_or_stale_columns():
     assert [cell for cell, _row, _col in window._attribute_grid.items] == original_cells
 
 
+def test_checkboxes_use_compact_columns_independently_of_text_fields():
+    window = _field_browser_window()
+    window._checkbox_fields = [
+        (f"FLAG_{index}", _FieldBrowserWidget()) for index in range(7)
+    ]
+    window._refresh_attribute_fields()
+    assert [(row, col) for _cell, row, col in window._checkbox_grid.items] == [
+        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (1, 0),
+    ]
+    assert window._checkbox_grid.stretches == {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 1}
+    window._attr_scroll_area.viewport().available_width = 400
+    window._refresh_attribute_fields()
+    assert [(row, col) for _cell, row, col in window._checkbox_grid.items] == [
+        (0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0),
+    ]
+    assert window._checkbox_grid.stretches == {0: 0, 1: 0, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0}
+
+
 def test_reset_filters_clears_all_values():
     window = _field_browser_window()
     window._enabled_check = window._lower_spin = window._upper_spin = None
@@ -299,7 +308,7 @@ def test_viewport_resize_reflows_fields_with_qt6_scoped_event(monkeypatch):
     event = type("_Resize", (), {"type": lambda self: 14})()
     window.eventFilter(window._attr_scroll_area.viewport(), event)
     assert window._attribute_layout_key == (
-        4, ("ACTIVE", "AERODROMEID", "AOI_SITUATION", "TRAFFIC_CLASS"),
+        3, 1, ("AERODROMEID", "AOI_SITUATION", "TRAFFIC_CLASS", "ACTIVE"),
     )
 
 
@@ -475,8 +484,8 @@ def _selection_window():
     window._current_page = 1
     window._quick_search_active_text = ""
     window._quick_search_active_column = None
-    window._sort_column_combo = _SelectionWidget("name")
-    window._sort_order_combo = _SelectionWidget("asc")
+    window._sort_column = "name"
+    window._sort_descending = False
     window._page_size_spin = type("_PageSize", (), {"value": lambda self: 2})()
     window._summary_label = _SelectionWidget()
     window._selection_label = _SelectionWidget()
@@ -536,9 +545,34 @@ def test_selected_records_bypass_quick_search_but_not_layer_results():
     assert window._clear_selection_btn.enabled is False
 
 
+def test_header_click_sorts_ascending_then_toggles_descending():
+    window = _selection_window()
+    window._columns = [{"name": "name", "type": "varchar"}, {"name": "rank", "type": "numeric"}]
+    for rank, record in zip([30, 4, 200, 1], window._all_records):
+        record["rank"] = rank
+    window._apply_view_state()
+
+    window._on_header_clicked(2)
+    assert (window._sort_column, window._sort_descending) == ("rank", False)
+    assert window._current_fids == [4, 2]
+
+    window._current_page = 2
+    window._on_header_clicked(2)
+    assert window._sort_descending is True
+    assert window._current_page == 1
+    assert window._current_fids == [3, 1]
+
+    window._on_header_clicked(1)
+    assert (window._sort_column, window._sort_descending) == ("name", False)
+    assert window._current_fids == [1, 2]
+
+    window._on_header_clicked(0)
+    assert (window._sort_column, window._sort_descending) == ("name", False)
+
+
 def test_selection_order_preserves_descending_sort_and_paging():
     window = _selection_window()
-    window._sort_order_combo.value = "desc"
+    window._sort_descending = True
     window._layer.selectByIds([1, 3, 4])
     assert window._current_fids == [4, 3]
 
@@ -567,7 +601,7 @@ def test_selection_reuses_sort_cache_and_invalidates_on_sort_search_and_reload()
     window._layer.selectByIds([4])
     assert window._record_order_cache is cache
 
-    window._sort_order_combo.value = "desc"
+    window._sort_descending = True
     window._apply_view_state()
     assert window._record_order_cache is not cache
     assert window._current_fids == [4, 3]
@@ -718,6 +752,7 @@ def test_candidate_values_for_child_column_follow_parent_selection():
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     window._filter_by_map = {"flight_sector": "sectors_combination"}
     window._attr_combos = {"sectors_combination": _DummyCombo("DEC365")}
+    window._attr_edits = {}
     window._distinct_values = {
         "flight_sector": ["DELTA_H", "DELTA_L", "BRAVO_H"],
         "sectors_combination": ["DEC365", "DEC366"],
@@ -737,6 +772,7 @@ def test_candidate_values_for_child_column_falls_back_when_parent_not_single():
     window = LayerCustomViewWindow.__new__(LayerCustomViewWindow)
     window._filter_by_map = {"flight_sector": "sectors_combination"}
     window._attr_combos = {"sectors_combination": _DummyCombo("DEC365, DEC366")}
+    window._attr_edits = {}
     window._distinct_values = {
         "flight_sector": ["DELTA_H", "DELTA_L", "BRAVO_H"],
         "sectors_combination": ["DEC365", "DEC366"],

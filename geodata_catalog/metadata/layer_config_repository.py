@@ -9,6 +9,13 @@ from geodata_catalog.exceptions import ConfigurationException
 from geodata_catalog.svg_markers import portable_svg_reference
 
 
+def search_input_type(column: dict[str, str | bool]) -> str:
+    input_type = str(column.get("input_type") or "text field").strip().lower()
+    if input_type == "text field" and column.get("use_distinct", False):
+        return "lov"
+    return input_type
+
+
 @dataclass
 class LayerConfig:
     """Per-layer display and search configuration stored in layer_config.json."""

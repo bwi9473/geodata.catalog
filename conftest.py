@@ -30,6 +30,9 @@ def _install_qgis_stubs() -> None:
     qgis_pyqt_xml = _make_stub("qgis.PyQt.QtXml")
     for name in ("QSize", "QVariant"):
         setattr(qgis_pyqt_core, name, type(name, (), {"__init__": lambda self, *args: None}))
+    qgis_pyqt_core.QTimer = type(
+        "QTimer", (), {"singleShot": staticmethod(lambda _msec, callback: callback())}
+    )
     for name in ("QIcon", "QColor", "QPalette"):
         setattr(qgis_pyqt_gui, name, type(name, (), {}))
     qgis_pyqt_xml.QDomDocument = type("QDomDocument", (), {})

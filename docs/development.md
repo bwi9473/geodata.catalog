@@ -40,6 +40,23 @@ pytest geodata_catalog/tests/test_kml_connector.py
 pytest -v geodata_catalog/tests/
 ```
 
+### Attribute-filter UI tests with real Qt
+
+The standard pytest run skips `test_attribute_filter_ui_qt.py` because it uses
+QGIS stubs. Run this module separately with QGIS Python to check real widgets,
+responsive checkbox spacing, embedded LOV actions, multi-selection dialogs,
+dependent dropdowns, icon resources, and configuration migration.
+
+For example, in PowerShell with QGIS 4 installed:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+& 'C:\Program Files\QGIS 4.2.3\bin\python-qgis.bat' -m unittest geodata_catalog.tests.test_attribute_filter_ui_qt -v
+```
+
+Adjust the installation path to your QGIS version. This runs the actual PyQt6
+widgets without opening desktop windows; it does not install additional packages.
+
 ### Run with coverage
 
 ```bash

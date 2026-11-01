@@ -36,6 +36,9 @@ class LayerFilterService:
     """Builds and parses QGIS subset-string expressions for all filter types."""
 
     MODE_BETWEEN = "between"
+    MODE_OVERLAPS = MODE_BETWEEN
+    MODE_WITHIN = "within"
+    MODE_COVERS = "covers"
     MODE_ABOVE = "above"
     MODE_BELOW = "below"
     MODE_NONE = "none"
@@ -69,6 +72,17 @@ class LayerFilterService:
             return (
                 f'CAST("{lower_field}" AS INTEGER) <= {upper} AND '
                 f'CAST("{upper_field}" AS INTEGER) >= {lower}'
+            )
+        if flight_filter.mode == LayerFilterService.MODE_WITHIN:
+            return (
+                f'CAST("{lower_field}" AS INTEGER) >= {lower} AND '
+                f'CAST("{upper_field}" AS INTEGER) <= {upper}'
+            )
+        if flight_filter.mode == LayerFilterService.MODE_COVERS:
+            # Literal-first form keeps "covers" distinguishable from "between" when parsing.
+            return (
+                f'{lower} >= CAST("{lower_field}" AS INTEGER) AND '
+                f'{upper} <= CAST("{upper_field}" AS INTEGER)'
             )
         if flight_filter.mode == LayerFilterService.MODE_ABOVE:
             return f'CAST("{lower_field}" AS INTEGER) >= {lower}'
@@ -142,6 +156,14 @@ class LayerFilterService:
         r'CAST\("([^"]+)"\s+AS\s+INTEGER\)\s*<=\s*(\d+)\s+AND\s+CAST\("([^"]+)"\s+AS\s+INTEGER\)\s*>=\s*(\d+)',
         re.IGNORECASE,
     )
+    _PAT_WITHIN = re.compile(
+        r'CAST\("([^"]+)"\s+AS\s+INTEGER\)\s*>=\s*(\d+)\s+AND\s+CAST\("([^"]+)"\s+AS\s+INTEGER\)\s*<=\s*(\d+)',
+        re.IGNORECASE,
+    )
+    _PAT_COVERS = re.compile(
+        r'(\d+)\s*>=\s*CAST\("([^"]+)"\s+AS\s+INTEGER\)\s+AND\s+(\d+)\s*<=\s*CAST\("([^"]+)"\s+AS\s+INTEGER\)',
+        re.IGNORECASE,
+    )
     _PAT_ABOVE = re.compile(
         r'CAST\("([^"]+)"\s+AS\s+INTEGER\)\s*>=\s*(\d+)',
         re.IGNORECASE,
@@ -153,6 +175,8 @@ class LayerFilterService:
     _PAT_ANY_FL = re.compile(
         r'(?:'
         r'CAST\("[^"]+"\s+AS\s+INTEGER\)\s*<=\s*\d+\s+AND\s+CAST\("[^"]+"\s+AS\s+INTEGER\)\s*>=\s*\d+'
+        r'|CAST\("[^"]+"\s+AS\s+INTEGER\)\s*>=\s*\d+\s+AND\s+CAST\("[^"]+"\s+AS\s+INTEGER\)\s*<=\s*\d+'
+        r'|\d+\s*>=\s*CAST\("[^"]+"\s+AS\s+INTEGER\)\s+AND\s+\d+\s*<=\s*CAST\("[^"]+"\s+AS\s+INTEGER\)'
         r'|CAST\("[^"]+"\s+AS\s+INTEGER\)\s*>=\s*\d+'
         r'|CAST\("[^"]+"\s+AS\s+INTEGER\)\s*<=\s*\d+'
         r')',
@@ -179,6 +203,28 @@ class LayerFilterService:
                 enabled=True,
                 lower_field=m.group(1),
                 upper_field=m.group(3),
+            )
+
+        m = LayerFilterService._PAT_WITHIN.search(subset_string)
+        if m:
+            return FlightLevelFilter(
+                mode=LayerFilterService.MODE_WITHIN,
+                lower=int(m.group(2)),
+                upper=int(m.group(4)),
+                enabled=True,
+                lower_field=m.group(1),
+                upper_field=m.group(3),
+            )
+
+        m = LayerFilterService._PAT_COVERS.search(subset_string)
+        if m:
+            return FlightLevelFilter(
+                mode=LayerFilterService.MODE_COVERS,
+                lower=int(m.group(1)),
+                upper=int(m.group(3)),
+                enabled=True,
+                lower_field=m.group(2),
+                upper_field=m.group(4),
             )
 
         m = LayerFilterService._PAT_ABOVE.search(subset_string)

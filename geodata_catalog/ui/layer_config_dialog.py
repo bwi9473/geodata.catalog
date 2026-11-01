@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from geodata_catalog.exceptions import ConfigurationException
-from geodata_catalog.metadata.layer_config_repository import LayerConfig
+from geodata_catalog.metadata.layer_config_repository import LayerConfig, search_input_type
 from geodata_catalog.services.style_service import (
     generate_style_preview_icon,
     generate_svg_preview_icon,
@@ -197,7 +197,7 @@ class LayerConfigDialog(QDialog):
 
         fields_group = QGroupBox("Layer Attributes")
         fields_layout = QVBoxLayout(fields_group)
-        self._fields_table = QTableWidget(0, 10)
+        self._fields_table = QTableWidget(0, 9)
         self._fields_table.setHorizontalHeaderLabels(
             [
                 "Field Name",
@@ -208,7 +208,6 @@ class LayerConfigDialog(QDialog):
                 "Search",
                 "Export",
                 "Key Column",
-                "Use Distinct",
                 "Filter By",
             ]
         )
@@ -216,10 +215,10 @@ class LayerConfigDialog(QDialog):
             self._on_attribute_header_clicked
         )
         self._fields_table.horizontalHeader().setStretchLastSection(False)
-        for column, width in enumerate([145, 145, 85, 110, 85, 60, 60, 85, 80, 120]):
+        for column, width in enumerate([145, 145, 85, 110, 85, 60, 60, 85, 120]):
             self._fields_table.setColumnWidth(column, width)
         self._fields_table.horizontalHeader().setSectionResizeMode(
-            9, _enum(QHeaderView, "ResizeMode", "Fixed")
+            8, _enum(QHeaderView, "ResizeMode", "Fixed")
         )
         self._fields_table.setMinimumHeight(250)
         fields_layout.addWidget(self._fields_table)
@@ -349,12 +348,11 @@ class LayerConfigDialog(QDialog):
                 "name": name,
                 "label": str(column.get("label", field.get("label", name))),
                 "type": str(column.get("type", field.get("type", "varchar"))),
-                "input_type": str(column.get("input_type", "text field")),
+                "input_type": search_input_type(column),
                 "position": position,
                 "search": bool(column.get("search", False)),
                 "export": bool(column.get("export", False)),
                 "key": bool(column.get("key", False)),
-                "use_distinct": bool(column.get("use_distinct", False)),
                 **({"filter_by": str(column["filter_by"])} if column.get("filter_by") else {}),
             })
         return merged or list(configured_by_name.values())
@@ -378,7 +376,7 @@ class LayerConfigDialog(QDialog):
                 default=0,
             ) + 45,
         )
-        self._fields_table.setColumnWidth(9, filter_by_width)
+        self._fields_table.setColumnWidth(8, filter_by_width)
         ordered = sorted(
             enumerate(columns),
             key=lambda value: (
@@ -397,13 +395,12 @@ class LayerConfigDialog(QDialog):
             self._fields_table.setItem(row, 0, name_item)
             self._fields_table.setItem(row, 1, QTableWidgetItem(str(column.get("label", name))))
             self._set_type_combo_at_row(self._fields_table, row, str(column.get("type", "varchar")))
-            self._set_input_type_combo_at_row(self._fields_table, row, str(column.get("input_type", "text field")))
+            self._set_input_type_combo_at_row(self._fields_table, row, search_input_type(column))
             for index, key in (
                 (4, "label_column"),
                 (5, "search"),
                 (6, "export"),
                 (7, "key"),
-                (8, "use_distinct"),
             ):
                 checkbox = QCheckBox()
                 checkbox.setChecked(
@@ -422,7 +419,7 @@ class LayerConfigDialog(QDialog):
             filter_by_combo.addItem("")
             filter_by_combo.addItems(field_names)
             filter_by_combo.setCurrentText(str(column.get("filter_by", "") or ""))
-            self._fields_table.setCellWidget(row, 9, filter_by_combo)
+            self._fields_table.setCellWidget(row, 8, filter_by_combo)
 
     def _on_exclusive_checkbox_toggled(
         self,
@@ -437,7 +434,7 @@ class LayerConfigDialog(QDialog):
                 self._fields_table.cellWidget(row, selected_column).setChecked(False)
 
     def _on_attribute_header_clicked(self, column: int) -> None:
-        if column not in (4, 5, 6, 7, 8):
+        if column not in (4, 5, 6, 7):
             return
         checkboxes = [
             self._fields_table.cellWidget(row, column)
@@ -593,7 +590,7 @@ class LayerConfigDialog(QDialog):
                 continue
             type_combo = self._fields_table.cellWidget(row, 2)
             input_type_combo = self._fields_table.cellWidget(row, 3)
-            filter_by_combo = self._fields_table.cellWidget(row, 9)
+            filter_by_combo = self._fields_table.cellWidget(row, 8)
             entry: dict[str, str | bool] = {
                 "name": name,
                 "label": label_item.text().strip() if label_item and label_item.text().strip() else name,
@@ -602,7 +599,6 @@ class LayerConfigDialog(QDialog):
                 "search": bool(self._fields_table.cellWidget(row, 5).isChecked()),
                 "export": bool(self._fields_table.cellWidget(row, 6).isChecked()),
                 "key": bool(self._fields_table.cellWidget(row, 7).isChecked()),
-                "use_distinct": bool(self._fields_table.cellWidget(row, 8).isChecked()),
                 "position": self._field_positions.get(row, row),
             }
             if filter_by_combo and filter_by_combo.currentText().strip():
@@ -624,7 +620,8 @@ class LayerConfigDialog(QDialog):
         combo.addItem("text field")
         combo.addItem("checkbox")
         combo.addItem("dropdown")
+        combo.addItem("LOV")
         selected = (value or "text field").strip().lower()
-        idx = combo.findText(selected)
+        idx = combo.findText("LOV" if selected == "lov" else selected)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         table.setCellWidget(row, 3, combo)

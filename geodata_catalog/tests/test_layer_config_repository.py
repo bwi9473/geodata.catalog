@@ -2,7 +2,7 @@ from pathlib import Path
 import base64
 import json
 
-from geodata_catalog.metadata.layer_config_repository import LayerConfig, LayerConfigRepository
+from geodata_catalog.metadata.layer_config_repository import LayerConfig, LayerConfigRepository, search_input_type
 
 
 def test_layer_config_from_dict_defaults_enable_fl_filter_to_true():
@@ -16,6 +16,15 @@ def test_layer_config_from_dict_defaults_enable_fl_filter_to_true():
     config = LayerConfig.from_dict(raw)
 
     assert config.enable_fl_filter is True
+
+
+def test_legacy_distinct_text_fields_become_lov_without_changing_other_display_types():
+    assert search_input_type({"use_distinct": True}) == "lov"
+    assert search_input_type({"input_type": "text field", "use_distinct": True}) == "lov"
+    assert search_input_type({"input_type": "dropdown", "use_distinct": True}) == "dropdown"
+    assert search_input_type({"input_type": "checkbox", "use_distinct": True}) == "checkbox"
+    assert search_input_type({"input_type": "LOV"}) == "lov"
+    assert search_input_type({"use_distinct": False}) == "text field"
 
 
 def test_layer_config_from_dict_migrates_legacy_column_lists():
@@ -52,6 +61,7 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
         field_columns=[
             {"name": "STATUS", "label": "Status", "type": "varchar", "input_type": "dropdown", "search": True},
             {"name": "ID", "label": "ID", "type": "numeric", "export": True, "key": True},
+            {"name": "AREA_ID", "input_type": "lov", "search": True, "filter_by": "STATUS"},
         ],
         key_column="ID",
     )
@@ -69,6 +79,8 @@ def test_layer_config_repository_persists_enable_fl_filter(tmp_path: Path):
     assert loaded.searchable_columns[0]["input_type"] == "dropdown"
     assert loaded.field_columns[1]["export"] is True
     assert loaded.key_column == "ID"
+    assert loaded.searchable_columns[1]["input_type"] == "lov"
+    assert loaded.searchable_columns[1]["filter_by"] == "STATUS"
     payload = json.loads(repo_file.read_text(encoding="utf-8"))
     assert "searchable_columns" not in payload[0]
     assert "view_columns" not in payload[0]

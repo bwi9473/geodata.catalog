@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from geodata_catalog.metadata.system_configuration_repository import DEFAULT_FLIGHT_LEVEL_PRESETS
 from geodata_catalog.services.layer_filter_service import (
     AttributeSearchFilter,
     FlightLevelFilter,
@@ -111,10 +112,14 @@ if QWidget is not None:
             self._active_handle: str | None = None
             self._handle_radius = 8
             self._track_height = 4
-            self.setMinimumHeight(30)
+            self._keyboard_handle = "lower"
+            self.setMinimumHeight(52)
+            self.setFocusPolicy(getattr(getattr(Qt, "FocusPolicy", Qt), "StrongFocus"))
+            self.setAccessibleName("Flight level range")
+            self.setToolTip("Drag either bound; Space switches bounds, arrow keys adjust the selected bound")
 
         def sizeHint(self):
-            return QSize(320, 30)
+            return QSize(240, 52)
 
         def setRange(self, minimum: int, maximum: int) -> None:
             self._minimum = int(minimum)
@@ -152,7 +157,13 @@ if QWidget is not None:
 
             left = self._handle_radius
             right = max(left + 1, self.width() - self._handle_radius)
-            y = self.height() // 2
+            y = 34
+
+            painter.setPen(self.palette().windowText().color() if self.isEnabled() else self.palette().mid().color())
+            alignment = getattr(Qt, "AlignmentFlag", Qt)
+            label_rect = QRect(left, 0, right - left, 20)
+            painter.drawText(label_rect, alignment.AlignLeft, f"FL{self._minimum:03d}")
+            painter.drawText(label_rect, alignment.AlignRight, f"FL{self._maximum:03d}")
 
             track_rect = QRect(
                 left,
@@ -162,7 +173,7 @@ if QWidget is not None:
             )
             if _NO_PEN is not None:
                 painter.setPen(_NO_PEN)
-            painter.setBrush(QBrush(QColor("#d8dde6")))
+            painter.setBrush(self.palette().mid())
             painter.drawRoundedRect(track_rect, 2, 2)
 
             lower_x = self._value_to_pos(self._lower)
@@ -173,13 +184,15 @@ if QWidget is not None:
                 max(1, upper_x - lower_x),
                 self._track_height,
             )
-            painter.setBrush(QBrush(QColor("#3572a5")))
+            painter.setBrush(self.palette().highlight() if self.isEnabled() else self.palette().mid())
             painter.drawRoundedRect(selected_rect, 2, 2)
 
-            painter.setPen(QPen(QColor("#2f3b4a"), 1))
-            painter.setBrush(QBrush(QColor("white")))
-            painter.drawEllipse(lower_x - self._handle_radius, y - self._handle_radius, self._handle_radius * 2, self._handle_radius * 2)
-            painter.drawEllipse(upper_x - self._handle_radius, y - self._handle_radius, self._handle_radius * 2, self._handle_radius * 2)
+            painter.setBrush(self.palette().base())
+            for handle, x in (("lower", lower_x), ("upper", upper_x)):
+                focused = self.hasFocus() and self._keyboard_handle == handle
+                color = self.palette().highlight().color() if focused else self.palette().mid().color()
+                painter.setPen(QPen(color, 3 if focused else 1))
+                painter.drawEllipse(x - self._handle_radius, y - self._handle_radius, self._handle_radius * 2, self._handle_radius * 2)
 
         def mousePressEvent(self, event) -> None:
             if event.button() != MOUSE_LEFT:
@@ -188,6 +201,10 @@ if QWidget is not None:
             upper_x = self._value_to_pos(self._upper)
             x = event.position().x() if hasattr(event, "position") else event.x()
             self._active_handle = "lower" if abs(x - lower_x) <= abs(x - upper_x) else "upper"
+            if lower_x == upper_x and x >= upper_x:
+                self._active_handle = "upper"
+            self._keyboard_handle = self._active_handle
+            self.setFocus()
             self._set_active_from_pos(x)
 
         def mouseMoveEvent(self, event) -> None:
@@ -201,6 +218,37 @@ if QWidget is not None:
             self._active_handle = None
             if had_active_handle:
                 self.rangeReleased.emit(self._lower, self._upper)
+
+        def keyPressEvent(self, event) -> None:
+            keys = getattr(Qt, "Key", Qt)
+            key = event.key()
+            if key == keys.Key_Space:
+                self._keyboard_handle = "upper" if self._keyboard_handle == "lower" else "lower"
+                self.update()
+                event.accept()
+                return
+            steps = {keys.Key_Left: -1, keys.Key_Down: -1, keys.Key_Right: 1,
+                     keys.Key_Up: 1, keys.Key_PageDown: -10, keys.Key_PageUp: 10}
+            if key not in steps and key not in (keys.Key_Home, keys.Key_End):
+                super().keyPressEvent(event)
+                return
+            value = self._lower if self._keyboard_handle == "lower" else self._upper
+            value = self._minimum if key == keys.Key_Home else self._maximum if key == keys.Key_End else value + steps[key]
+            if self._keyboard_handle == "lower":
+                self.setLowerValue(min(value, self._upper))
+            else:
+                self.setUpperValue(max(value, self._lower))
+            event.accept()
+
+        def keyReleaseEvent(self, event) -> None:
+            keys = getattr(Qt, "Key", Qt)
+            if event.key() in (keys.Key_Left, keys.Key_Down, keys.Key_Right, keys.Key_Up,
+                               keys.Key_PageDown, keys.Key_PageUp, keys.Key_Home, keys.Key_End):
+                if not event.isAutoRepeat():
+                    self.rangeReleased.emit(self._lower, self._upper)
+                event.accept()
+            else:
+                super().keyReleaseEvent(event)
 
         def _set_active_from_pos(self, x_pos: float) -> None:
             value = self._pos_to_value(x_pos)
@@ -287,16 +335,13 @@ class LayerFilterDialog(QDialog):
     def _normalize_flight_level_presets(
         raw_presets: list[dict[str, int | str]] | None,
     ) -> list[dict[str, int | str]]:
-        if not raw_presets:
-            return []
-
         normalized: list[dict[str, int | str]] = []
-        for item in raw_presets:
+        for item in raw_presets or DEFAULT_FLIGHT_LEVEL_PRESETS:
             if not isinstance(item, dict):
                 continue
 
             name = str(item.get("name", "")).strip()
-            if not name:
+            if not name or name.casefold() in ("enroute", "all"):
                 continue
 
             try:
@@ -311,6 +356,7 @@ class LayerFilterDialog(QDialog):
                 lower, upper = upper, lower
 
             normalized.append({"name": name, "lower": lower, "upper": upper})
+        normalized.append({"name": "ALL", "lower": 0, "upper": 999})
         return normalized
 
     # ------------------------------------------------------------------ #
@@ -521,6 +567,39 @@ class LayerFilterDialog(QDialog):
         self._enabled_check.toggled.connect(lambda _checked: self._update_fl_controls_enabled())
         fl_form.addRow(self._enabled_check)
 
+        self._fl_range_slider = FlightLevelRangeSlider(0, 999)
+        self._fl_range_slider.setValues(0, 600)
+        self._fl_range_slider.rangeChanged.connect(self._on_fl_range_changed)
+        self._fl_range_slider.rangeReleased.connect(self._on_fl_slider_released)
+        fl_form.addRow(self._fl_range_slider)
+
+        self._lower_spin = QSpinBox()
+        self._lower_spin.setRange(0, 999)
+        self._lower_spin.setValue(0)
+        self._lower_spin.setPrefix("FL")
+        self._lower_spin.setAccessibleName("Lower flight level")
+        self._lower_spin.setKeyboardTracking(False)
+        self._lower_spin.valueChanged.connect(self._on_lower_spin_changed)
+
+        self._upper_spin = QSpinBox()
+        self._upper_spin.setRange(0, 999)
+        self._upper_spin.setValue(600)
+        self._upper_spin.setPrefix("FL")
+        self._upper_spin.setAccessibleName("Upper flight level")
+        self._upper_spin.setKeyboardTracking(False)
+        self._upper_spin.valueChanged.connect(self._on_upper_spin_changed)
+
+        spin_row = QHBoxLayout()
+        lower_label = QLabel("Lower")
+        lower_label.setBuddy(self._lower_spin)
+        upper_label = QLabel("Upper")
+        upper_label.setBuddy(self._upper_spin)
+        spin_row.addWidget(lower_label)
+        spin_row.addWidget(self._lower_spin, 1)
+        spin_row.addWidget(upper_label)
+        spin_row.addWidget(self._upper_spin, 1)
+        fl_form.addRow(spin_row)
+
         if self._flight_level_presets:
             preset_row = QHBoxLayout()
             for preset in self._flight_level_presets:
@@ -528,7 +607,6 @@ class LayerFilterDialog(QDialog):
                 upper = int(preset["upper"])
                 button = QPushButton(str(preset["name"]))
                 button.setCheckable(True)
-                button.setFlat(True)
                 button.setToolTip(f"Set FL range to FL{lower} - FL{upper}")
                 button.clicked.connect(
                     lambda _checked, lo=lower, hi=upper: self._on_preset_clicked(lo, hi)
@@ -536,31 +614,7 @@ class LayerFilterDialog(QDialog):
                 preset_row.addWidget(button)
                 self._preset_buttons.append((button, lower, upper))
             preset_row.addStretch(1)
-            fl_form.addRow("Quick presets", preset_row)
-
-        self._fl_range_slider = FlightLevelRangeSlider(0, 999)
-        self._fl_range_slider.setValues(0, 600)
-        self._fl_range_slider.rangeChanged.connect(self._on_fl_range_changed)
-        self._fl_range_slider.rangeReleased.connect(self._on_fl_slider_released)
-        fl_form.addRow("FL range", self._fl_range_slider)
-
-        self._lower_spin = QSpinBox()
-        self._lower_spin.setRange(0, 999)
-        self._lower_spin.setValue(0)
-        self._lower_spin.setPrefix("FL")
-        self._lower_spin.valueChanged.connect(self._on_lower_spin_changed)
-
-        self._upper_spin = QSpinBox()
-        self._upper_spin.setRange(0, 999)
-        self._upper_spin.setValue(600)
-        self._upper_spin.setPrefix("FL")
-        self._upper_spin.valueChanged.connect(self._on_upper_spin_changed)
-
-        spin_row = QHBoxLayout()
-        spin_row.addWidget(self._lower_spin)
-        spin_row.addWidget(QLabel("to"))
-        spin_row.addWidget(self._upper_spin)
-        fl_form.addRow("Bounds", spin_row)
+            fl_form.addRow(preset_row)
 
         return fl_group
 

@@ -63,6 +63,27 @@ def test_normalize_flight_level_fields_uses_real_layer_case():
     assert normalized.upper_field == "FL_UPPER"
 
 
+def test_distinct_values_collected_for_lov_dropdown_checkbox_and_legacy_text():
+    plugin = GeoDataCatalogPlugin.__new__(GeoDataCatalogPlugin)
+    layer = _FakeLayer(["AREA_ID", "SHAPE", "ACTIVE", "LEGACY", "PLAIN"])
+    layer.getFeatures = lambda: iter([
+        {"AREA_ID": "A", "SHAPE": "circle", "ACTIVE": "Y", "LEGACY": "old", "PLAIN": "text"},
+        {"AREA_ID": "B", "SHAPE": "circle", "ACTIVE": "N", "LEGACY": "old", "PLAIN": "text"},
+    ])
+    values, filtered = plugin._collect_distinct_values(layer, [
+        {"name": "area_id", "input_type": "LOV"},
+        {"name": "shape", "input_type": "dropdown", "filter_by": "area_id"},
+        {"name": "active", "input_type": "checkbox"},
+        {"name": "legacy", "input_type": "text field", "use_distinct": True},
+        {"name": "plain", "input_type": "text field"},
+    ])
+    assert values == {
+        "AREA_ID": ["A", "B"], "SHAPE": ["circle"],
+        "ACTIVE": ["N", "Y"], "LEGACY": ["old"],
+    }
+    assert filtered == {"SHAPE": {"A": ["circle"], "B": ["circle"]}}
+
+
 def test_apply_layer_filter_removes_cleared_distinct_selection_clause():
     plugin = GeoDataCatalogPlugin.__new__(GeoDataCatalogPlugin)
 

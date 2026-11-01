@@ -238,6 +238,25 @@ def test_ensure_preferred_basemap_loaded_applies_saved_choice(monkeypatch):
     assert layers[0].name() == "Esri World Gray Canvas"
 
 
+def test_has_background_map_detects_catalog_basemap_or_other_raster(monkeypatch):
+    monkeypatch.setattr(layer_toolbox_module, "QgsRasterLayer", _FakeRasterLayer)
+
+    class _VectorLayer:
+        def id(self):
+            return "vector-1"
+
+        def customProperty(self, _key, default=None):
+            return default
+
+    vector = _VectorLayer()
+    assert LayerToolboxService(logger=_FakeLogger(), project=_FakeProject()).has_background_map() is False
+    assert LayerToolboxService(logger=_FakeLogger(), project=_FakeProject(vector)).has_background_map() is False
+
+    raster = _FakeRasterLayer("type=xyz&url=own", "Own background", "wms")
+    assert LayerToolboxService(logger=_FakeLogger(), project=_FakeProject(vector, raster)).has_background_map() is True
+    assert LayerToolboxService(logger=_FakeLogger(), project=None).has_background_map() is False
+
+
 def test_muac_extent_wgs84_has_expected_bounds():
     assert LayerToolboxService.muac_extent_wgs84() == (2.0, 48.5, 12.5, 56.0)
 
